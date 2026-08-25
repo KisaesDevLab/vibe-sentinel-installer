@@ -1,0 +1,31 @@
+# Generated per-install artifacts (live under /etc/vibe-sentinel on the target host;
+# anything landing here is a local test run)
+compose/*.yml
+compose/*.env
+compose/.env*
+*.env
+!*.env.example
+
+# Wizard / preflight local output
+config.json
+preflight-risks.json
+*.log
+
+# Lite bundle build output
+lite/dist/
+lite/out/
+*.msi
+*.pkg
+*.deb
+
+# Secrets — never commit
+secrets/
+*.pem
+*.key
+*.token
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,25 @@
+# modules/mesh/relay/compose.yml — NetBird relay SUB-MODULE. OFF BY DEFAULT.
+#
+# Opening 3478/udp is the ONLY permitted inbound port in the whole appliance
+# (§2.2). It is merged into the stack only when
+#   .modules.mesh.relay_enabled == true
+# in /etc/vibe-sentinel/config.json — which the wizard sets ONLY after a
+# failed NAT reachability test AND recorded QI consent. See README.md.
+
+name: vibe-sentinel
+
+networks:
+  sentinel:
+    name: vibe-sentinel
+
+services:
+  netbird-relay:
+    image: ${IMG_NETBIRD_RELAY}
+    restart: unless-stopped
+    environment:
+      NB_LISTEN_ADDRESS: ":3478"
+      NB_EXPOSED_ADDRESS: "rels://nb.${SENTINEL_DOMAIN}:3478"
+      NB_AUTH_SECRET: ${NETBIRD_RELAY_SECRET}
+    ports:
+      - "3478:3478/udp"     # the single documented SENT-E-005 exception
+    networks: [sentinel]

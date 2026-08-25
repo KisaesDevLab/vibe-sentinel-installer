@@ -1,0 +1,53 @@
+# modules/edge/compose.yml — CrowdSec + local bouncers.
+# LAPI on loopback 8080 (§2.6). Docker socket READ-ONLY for container log
+# acquisition. The Cloudflare bouncer is NOT a container: it is the current
+# Workers-based bouncer, deployed into the firm's Cloudflare account via the
+# API by cloudflare-worker-bouncer.sh (Decision R22) — see NOTES.md.
+
+name: vibe-sentinel
+
+networks:
+  sentinel:
+    name: vibe-sentinel
+
+volumes:
+  crowdsec-config:
+  crowdsec-data:
+
+services:
+  crowdsec:
+    image: ${IMG_CROWDSEC}
+    restart: unless-stopped
+    environment:
+      COLLECTIONS: "crowdsecurity/linux crowdsecurity/sshd"
+      # Vaultwarden + Vibe auth-log parsers are enrolled by the keys/edge
+      # setup once those modules run (plan Phase 5/7K).
+    ports:
+      - "127.0.0.1:8080:8080"     # LAPI, loopback only (§2.6)
+    volumes:
+      - crowdsec-config:/etc/crowdsec
+      - crowdsec-data:/var/lib/crowdsec/data
+      - /var/log:/var/log/host:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro   # log acquisition, read-only
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD", "cscli", "lapi", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
+
+  # nftables bouncer — needs the host network + NET_ADMIN to program bans.
+  cs-firewall-bouncer:
+    image: ${IMG_CS_FIREWALL_BOUNCER}
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      # LAPI reached over the loopback port published above.
+      API_URL: http://127.0.0.1:8080
+      FIREWALL_BACKEND: nftables
+    volumes:
+      - ${SENTINEL_MODULES_DIR}/edge/firewall-bouncer.yaml:/etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml:ro

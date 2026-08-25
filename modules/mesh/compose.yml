@@ -1,0 +1,62 @@
+# modules/mesh/compose.yml — NetBird self-hosted control plane.
+# management + signal + dashboard. Published ONLY through the Cloudflare
+# Tunnel (no host ports): gRPC hostnames get http2Origin=true and the zone
+# gRPC setting, and the machine-facing endpoints get Access BYPASS policies —
+# all created by setup-cloudflare.sh per §2.2.
+#
+# The relay is a SUB-MODULE (relay/compose.yml), OFF by default: direct-only,
+# zero inbound ports (Decision 17). Authentik (IdP) already runs in core.
+
+name: vibe-sentinel
+
+networks:
+  sentinel:
+    name: vibe-sentinel
+
+volumes:
+  netbird-mgmt-data:
+  netbird-signal-data:
+
+services:
+  netbird-management:
+    image: ${IMG_NETBIRD_MANAGEMENT}
+    restart: unless-stopped
+    command:
+      - --port=80
+      - --log-file=console
+      - --disable-anonymous-metrics=true
+      - --single-account-mode-domain=${SENTINEL_DOMAIN}
+      - --dns-domain=netbird.${SENTINEL_DOMAIN}
+    volumes:
+      - netbird-mgmt-data:/var/lib/netbird
+      - ${SENTINEL_MODULES_DIR}/mesh/management.json:/etc/netbird/management.json:ro
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/ 2>/dev/null; [ $? -le 8 ] || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
+
+  netbird-signal:
+    image: ${IMG_NETBIRD_SIGNAL}
+    restart: unless-stopped
+    command:
+      - --port=80
+      - --log-file=console
+    volumes:
+      - netbird-signal-data:/var/lib/netbird
+    networks: [sentinel]
+
+  netbird-dashboard:
+    image: ${IMG_NETBIRD_DASHBOARD}
+    restart: unless-stopped
+    environment:
+      NETBIRD_MGMT_API_ENDPOINT: https://nb.${SENTINEL_DOMAIN}
+      NETBIRD_MGMT_GRPC_API_ENDPOINT: https://nb.${SENTINEL_DOMAIN}
+      AUTH_AUTHORITY: https://id.${SENTINEL_DOMAIN}/application/o/netbird/
+      AUTH_CLIENT_ID: netbird
+      AUTH_AUDIENCE: netbird
+      AUTH_SUPPORTED_SCOPES: openid profile email offline_access
+      USE_AUTH0: "false"
+    networks: [sentinel]

@@ -1,0 +1,182 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  sentinel-lite.wxs — Sentinel Lite for Windows, as a WiX Burn BUNDLE.
+
+  Template. lite/generate-lite.sh substitutes @@PLACEHOLDERS@@ with the firm's
+  values and stages the payload/ directory beside it.
+
+  WHY A BUNDLE AND NOT A SINGLE MSI:
+  Windows Installer will not run one MSI inside another, and this install is
+  fundamentally a SEQUENCE of third-party MSIs that must run in a specific
+  order. Burn chains them. The order is not a style choice:
+
+    1. NetBird       — enrolled FIRST with a one-time setup key. Everything
+                       after this needs the mesh: the Wazuh manager, the print
+                       gateway, and Vaultwarden all listen on the mesh
+                       interface only. Install Wazuh first and it will sit
+                       there failing to register against an unreachable
+                       manager, and the machine will look enrolled while
+                       reporting nothing.
+    2. Wazuh agent   — registers against the manager over the mesh by NAME.
+    3. Sysmon        — process/network/file visibility with the tuned config.
+    4. Payload MSI   — posture collector + 4h scheduled task, print queues,
+                       and the printer-egress firewall rules.
+
+  BUILD (on a Windows box with the WiX v3 Toolset and the payload staged):
+      candle.exe sentinel-lite.wxs -ext WixBalExtension -ext WixUtilExtension
+      light.exe  sentinel-lite.wixobj -ext WixBalExtension -ext WixUtilExtension \
+                 -out SentinelLite-@@FIRM_SLUG@@.exe
+
+  SIGNING: the produced .exe must be Authenticode-signed before deployment.
+  An unsigned bundle trains staff to click through SmartScreen warnings, which
+  is the exact behaviour the phishing pack exists to detect.
+
+  See README.md for what to drop into payload/.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:bal="http://schemas.microsoft.com/wix/BalExtension"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+
+  <?define FirmName        = "@@FIRM@@" ?>
+  <?define FirmSlug        = "@@FIRM_SLUG@@" ?>
+  <?define Domain          = "@@DOMAIN@@" ?>
+  <?define WazuhManager    = "@@WAZUH_MANAGER@@" ?>
+  <?define WazuhPassword   = "@@WAZUH_ENROLLMENT_PASSWORD@@" ?>
+  <?define NetBirdKey      = "@@NETBIRD_SETUP_KEY@@" ?>
+  <?define NetBirdMgmtUrl  = "@@NETBIRD_MGMT_URL@@" ?>
+  <?define PrintGateway    = "@@PRINT_GATEWAY@@" ?>
+  <?define BundleVersion   = "1.0.0.0" ?>
+
+  <Bundle Name="Sentinel Lite for $(var.FirmName)"
+          Version="$(var.BundleVersion)"
+          Manufacturer="Kisaes Dev Lab"
+          UpgradeCode="B7F1C2A4-3E5D-4A18-9C60-1D2E3F4A5B6C"
+          IconSourceFile="payload\sentinel.ico"
+          Compressed="yes">
+
+    <BootstrapperApplicationRef Id="WixStandardBootstrapperApplication.HyperlinkLicense">
+      <bal:WixStandardBootstrapperApplication
+        LicenseUrl="https://$(var.Domain)/sentinel/privacy-notice"
+        LogoFile="payload\sentinel-logo.png"
+        SuppressOptionsUI="yes"
+        ThemeFile="payload\theme.xml" />
+    </BootstrapperApplicationRef>
+
+    <!-- Refuse to run on anything older than Windows 10; the posture collector
+         depends on Get-MpComputerStatus and Get-NetFirewallProfile. -->
+    <util:RegistrySearch
+      Id="WinBuild"
+      Root="HKLM"
+      Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+      Value="CurrentBuild"
+      Variable="WindowsBuild" />
+    <bal:Condition Message="Sentinel Lite requires Windows 10 (build 17763) or later.">
+      WindowsBuild &gt;= 17763
+    </bal:Condition>
+
+    <!-- Firm identity, written before anything installs so a partially failed
+         install is still attributable when the machine turns up in inventory. -->
+    <util:RegistryKey Id="FirmKey" Root="HKLM" Key="SOFTWARE\VibeSentinel" ForceCreateOnInstall="yes" />
+
+    <Variable Name="FirmName"      Value="$(var.FirmName)"      Persisted="yes" Type="string" />
+    <Variable Name="SentinelDomain" Value="$(var.Domain)"       Persisted="yes" Type="string" />
+    <Variable Name="PrintGateway"  Value="$(var.PrintGateway)"  Persisted="yes" Type="string" />
+
+    <Chain>
+
+      <!-- ================================================================
+           1. NETBIRD — FIRST, ALWAYS.
+           The setup key is one-time and scoped to the 'workstations' group.
+           Nothing later in this chain can reach its server until this peer
+           is up, because every Sentinel service binds the mesh interface.
+           ================================================================ -->
+      <MsiPackage Id="NetBird"
+                  SourceFile="payload\netbird_installer.msi"
+                  DisplayName="NetBird mesh client"
+                  Description="Private mesh network. Installed first: everything else in this bundle is reachable only over the mesh."
+                  Vital="yes"
+                  Permanent="no"
+                  Cache="no">
+        <!-- NetBird's MSI reads these; the client enrols non-interactively. -->
+        <MsiProperty Name="SETUPKEY"      Value="$(var.NetBirdKey)" />
+        <MsiProperty Name="MANAGEMENTURL" Value="$(var.NetBirdMgmtUrl)" />
+        <MsiProperty Name="ADMINURL"      Value="https://nb-admin.$(var.Domain)" />
+      </MsiPackage>
+
+      <!-- Give the peer a moment to come up and DNS to start resolving the
+           firm hostnames before the Wazuh agent tries to register. Without
+           this, a fast machine races the mesh and the agent's first
+           registration attempt fails. -->
+      <ExePackage Id="WaitForMesh"
+                  SourceFile="payload\wait-for-mesh.exe"
+                  DisplayName="Waiting for the mesh"
+                  Description="Confirms the mesh is up and the Wazuh manager resolves before enrolling the agent."
+                  InstallCommand="-Manager $(var.WazuhManager) -TimeoutSeconds 180"
+                  PerMachine="yes"
+                  Vital="yes"
+                  Permanent="no" />
+
+      <!-- ================================================================
+           2. WAZUH AGENT
+           Registers over the mesh, by NAME, so a mesh IP change does not
+           invalidate every deployed agent.
+           ================================================================ -->
+      <MsiPackage Id="WazuhAgent"
+                  SourceFile="payload\wazuh-agent.msi"
+                  DisplayName="Wazuh agent"
+                  Description="Host intrusion detection, file integrity monitoring, and the posture channel."
+                  Vital="yes"
+                  Permanent="no"
+                  Cache="no">
+        <MsiProperty Name="WAZUH_MANAGER"               Value="$(var.WazuhManager)" />
+        <MsiProperty Name="WAZUH_REGISTRATION_SERVER"   Value="$(var.WazuhManager)" />
+        <MsiProperty Name="WAZUH_REGISTRATION_PASSWORD" Value="$(var.WazuhPassword)" />
+        <MsiProperty Name="WAZUH_AGENT_GROUP"           Value="windows-workstations" />
+        <MsiProperty Name="WAZUH_AGENT_NAME"            Value="[ComputerName]" />
+      </MsiPackage>
+
+      <!-- ================================================================
+           3. SYSMON with the tuned SwiftOnSecurity-derived config.
+           ================================================================ -->
+      <ExePackage Id="Sysmon"
+                  SourceFile="payload\Sysmon64.exe"
+                  DisplayName="Sysmon"
+                  Description="Process, network, and file visibility for the Data Handling detection pack."
+                  InstallCommand="-accepteula -i sysmon-config.xml"
+                  RepairCommand="-c sysmon-config.xml"
+                  UninstallCommand="-u force"
+                  PerMachine="yes"
+                  Vital="no"
+                  Permanent="no"
+                  DetectCondition="SysmonInstalled">
+        <Payload SourceFile="payload\sysmon-config.xml" />
+      </ExePackage>
+
+      <util:RegistrySearch
+        Id="SysmonSearch"
+        Root="HKLM"
+        Key="SYSTEM\CurrentControlSet\Services\Sysmon64"
+        Result="exists"
+        Variable="SysmonInstalled" />
+
+      <!-- ================================================================
+           4. SENTINEL LITE PAYLOAD
+           Posture collector + 4h scheduled task, print queues over IPP, and
+           the printer-egress firewall rules. Built from
+           sentinel-lite-payload.wxs.
+           ================================================================ -->
+      <MsiPackage Id="SentinelLitePayload"
+                  SourceFile="payload\sentinel-lite-payload.msi"
+                  DisplayName="Sentinel Lite"
+                  Description="Posture collection, firm print queues, and printer isolation rules."
+                  Vital="yes"
+                  Permanent="no"
+                  Cache="no">
+        <MsiProperty Name="PRINTGATEWAY" Value="$(var.PrintGateway)" />
+        <MsiProperty Name="FIRMNAME"     Value="$(var.FirmName)" />
+        <MsiProperty Name="SENTINELDOMAIN" Value="$(var.Domain)" />
+      </MsiPackage>
+
+    </Chain>
+  </Bundle>
+</Wix>

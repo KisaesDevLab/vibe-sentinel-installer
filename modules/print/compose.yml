@@ -1,0 +1,160 @@
+# modules/print/compose.yml — Vibe Print (Phase 8P).
+#
+# Vibe Print is the firm's ONLY print path. Workstations see virtual queues
+# published over the mesh via IPP Everywhere; nothing but this gateway talks to
+# a physical printer (printer-network-policy.sh generates the host firewall and
+# NetBird rules that enforce it).
+#
+# NO CONTENT INSPECTION (Decision 24). Control is by queue policy and source
+# application. Jobs are rendered to PDF for device-independent release only;
+# content is never parsed, indexed, or logged. The spool directory is
+# FIM/Falco-monitored (SENT-PR-012) and is secure-deleted after the hold time.
+#
+# Release policy (Decision 26), default `direct_onsite_hold_offsite`:
+#   on-site  — source IP inside ${ONSITE_SUBNETS} → prints immediately,
+#              NO PIN, no prompt.
+#   off-site — mesh peer printing to the office from home → HELD for PIN/web
+#              release at the device, so client documents never sit unattended
+#              in a tray.
+# A firm may flip any queue to `always_hold` (true pull-printing) or
+# `always_direct` in the Sentinel UI.
+#
+# Storage: PostgreSQL on the SHARED Sentinel instance, separate database
+# `vibe_print` (created by modules/core/db-init/10-create-databases.sh).
+#
+# Same image as the standalone product (Decision 22); this module adds only the
+# Sentinel integration layer (mesh identity, inventory sync, event forwarding,
+# policy push).
+
+name: vibe-sentinel
+
+networks:
+  sentinel:
+    name: vibe-sentinel
+
+volumes:
+  print-spool:
+  print-cups-config:
+  print-scanner-inbox:
+
+services:
+  # --- Gateway: CUPS + IPP Everywhere publisher + legacy raw-9100 listener ---
+  vibe-print:
+    image: ${IMG_VIBE_PRINT}
+    restart: unless-stopped
+    hostname: print
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@sentinel-db:5432/vibe_print
+      SENTINEL_API_URL: http://sentinel-api:8080
+      SENTINEL_DOMAIN: ${SENTINEL_DOMAIN}
+      PRINT_HOSTNAME: print.${SENTINEL_DOMAIN}
+      # TLS for IPPS and the CUPS web endpoint: the §2.6 wildcard, so IPP
+      # clients trust the gateway out of the box with no private CA.
+      TLS_CERT: /certs/live/wildcard.crt
+      TLS_KEY: /certs/live/wildcard.key
+      # Release policy (Decision 26)
+      DEFAULT_RELEASE_MODE: direct_onsite_hold_offsite
+      ONSITE_SUBNETS: ${ONSITE_SUBNETS}
+      HOLD_TIME_HOURS: ${PRINT_SPOOL_HOLD_HOURS}
+      # Decision 24 — stated in config so it is auditable, not just implied.
+      CONTENT_INSPECTION: "disabled"
+      SPOOL_DIR: /var/spool/vibe-print
+      SECURE_DELETE: "true"
+      # Job owner: submitting IP → asset owner (on-site, from inventory/DHCP)
+      # or mesh peer → asset owner (off-site, NetBird API). The IPP
+      # requesting-user-name is recorded as a secondary attribute only.
+      IDENTITY_SOURCES: inventory,netbird
+      NETBIRD_API_URL: http://netbird-management:80/api
+      # Printer discovery: SNMPv3 preferred, v1/v2c read-only fallback.
+      PRINTER_DISCOVERY_SNMP: "v3-preferred"
+      TZ: ${TZ}
+    volumes:
+      - print-cups-config:/etc/cups
+      - print-spool:/var/spool/vibe-print
+      - ${SENTINEL_DATA_DIR}/certs:/certs:ro
+    ports:
+      # IPP / IPP Everywhere (and IPPS on the same port), mesh interface only.
+      - "${MESH_BIND_IP}:631:631"
+      # Legacy raw JetDirect listener for clients that cannot do IPP,
+      # mesh interface only. Workstation firewalls block 9100 egress to
+      # everything EXCEPT this gateway (lite/print-queue/firewall).
+      - "${MESH_BIND_IP}:9100:9100"
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "lpstat -r >/dev/null 2>&1 || curl -fsSk -o /dev/null https://127.0.0.1:631/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 8
+      start_period: 60s
+
+  # --- Release station: web / mobile-web PIN release for HELD jobs ----------
+  # No badge hardware at launch (Decision 23); the release API is shaped so a
+  # badge kit can be added later. PINs are set in the Sentinel UI.
+  vibe-print-release:
+    image: ${IMG_VIBE_PRINT_RELEASE}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@sentinel-db:5432/vibe_print
+      PRINT_GATEWAY_URL: http://vibe-print:631
+      SENTINEL_API_URL: http://sentinel-api:8080
+      PUBLIC_URL: https://print.${SENTINEL_DOMAIN}:8632
+      TLS_CERT: /certs/live/wildcard.crt
+      TLS_KEY: /certs/live/wildcard.key
+      # Held jobs only. On-site direct jobs never see a PIN prompt.
+      RELEASE_REQUIRES_PIN_FOR: held
+      HOLD_TIME_HOURS: ${PRINT_SPOOL_HOLD_HOURS}
+      TZ: ${TZ}
+    volumes:
+      - ${SENTINEL_DATA_DIR}/certs:/certs:ro
+    ports:
+      # print.<domain> is a mesh-only A record (§2.6); the release UI lives on
+      # 8632 there because 443 on the mesh IP belongs to Vaultwarden in
+      # mesh_only mode. ntfy uses the same non-standard-port convention (8085).
+      - "${MESH_BIND_IP}:8632:8080"
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsSk -o /dev/null https://127.0.0.1:8080/healthz || curl -fsS -o /dev/null http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 8
+      start_period: 45s
+
+  # --- Scanner inbox: scan-to-SMB / FTPS / email lands HERE, never on a
+  # --- printer's internal storage or an open share. Auto-routes into the
+  # --- firm's document intake (Vibe T&B intake / MyBooks / mesh-only share).
+  vibe-print-scanner-inbox:
+    image: ${IMG_VIBE_PRINT_SCANNER_INBOX}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@sentinel-db:5432/vibe_print
+      SENTINEL_API_URL: http://sentinel-api:8080
+      INBOX_DIR: /var/lib/vibe-print/inbox
+      # Receivers. SMB and FTPS are what MFP scan-to-folder actually speaks;
+      # the SMTP receiver catches scan-to-email devices so their output never
+      # leaves the premises (SENT-PR-009 audits scan destinations).
+      SMB_ENABLED: "true"
+      SMB_SHARE_NAME: scans
+      FTPS_ENABLED: "true"
+      FTPS_PASSIVE_PORTS: 30000-30009
+      SMTP_RECEIVER_ENABLED: "true"
+      # Routing targets, resolved by the Sentinel API from firm settings.
+      ROUTE_DEFAULT: sentinel-intake
+      TZ: ${TZ}
+    volumes:
+      - print-scanner-inbox:/var/lib/vibe-print/inbox
+      - ${SENTINEL_DATA_DIR}/certs:/certs:ro
+    ports:
+      # Bound to the mesh interface. Where printers sit on a separate physical
+      # VLAN rather than a NetBird-routed subnet, printer-network-policy.sh
+      # adds the interface route so scan traffic can reach these listeners.
+      - "${MESH_BIND_IP}:445:445"
+      - "${MESH_BIND_IP}:21:21"
+      - "${MESH_BIND_IP}:30000-30009:30000-30009"
+      - "${MESH_BIND_IP}:2525:25"
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 8
+      start_period: 45s

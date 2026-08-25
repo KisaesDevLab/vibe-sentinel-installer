@@ -1,0 +1,88 @@
+# modules/pulse/compose.yml — Uptime Kuma (Phase 10P).
+#
+# Availability and certificate monitoring for every safeguard service and every
+# Vibe appliance. Monitors are managed by the Sentinel worker over the Kuma
+# socket.io API (small in-repo Node adapter; the community Python client is not
+# used in the stack) and carry an `auto-managed` tag — hand-made monitors are
+# left alone.
+#
+# VERSION: v2 line, pinned per Phase 0 note (c) — the socket.io API is
+# unversioned and has changed between releases, so the adapter is written
+# against one verified build. versions/manifest.json holds the pin, and
+# upgrade/upgrade.sh REFUSES to move this image unless the manifest marks
+# harness_passed:true for the target version.
+#
+# Auth: local Kuma admin with 2FA, deliberately NOT on Authentik (§2.5 — the
+# IdP's blast radius stays narrow; Kuma is one of the services that must still
+# be reachable when Authentik is the thing that is down).
+#
+# Storage: SQLite in the uptime-kuma-data volume. Backed up on every Vault run
+# with its own restic tag (§2.4).
+#
+# Reachability: mesh-bound on ${MESH_BIND_IP}:3001. The optional public status
+# page is published through the Cloudflare Tunnel — see the note at the bottom.
+
+name: vibe-sentinel
+
+networks:
+  sentinel:
+    name: vibe-sentinel
+
+volumes:
+  uptime-kuma-data:
+
+services:
+  uptime-kuma:
+    image: ${IMG_UPTIME_KUMA}
+    restart: unless-stopped
+    # List form so the two TLS keys can be passed through as bare names: unset
+    # in the environment means "not set on the container", which is what Kuma
+    # needs in order to serve plain HTTP.
+    environment:
+      - UPTIME_KUMA_PORT=3001
+      - UPTIME_KUMA_HOST=0.0.0.0
+      - UPTIME_KUMA_DISABLE_FRAME_SAMEORIGIN=false
+      - TZ=${TZ}
+      # Mesh TLS with the §2.6 wildcard cert. Left UNSET by default because
+      # lib/cloudflare.sh publishes status.<domain> with an HTTP origin
+      # (service: http://uptime-kuma:3001) for the optional status page. Set
+      # both in /etc/vibe-sentinel/.env to
+      #   UPTIME_KUMA_SSL_CERT=/certs/live/wildcard.crt
+      #   UPTIME_KUMA_SSL_KEY=/certs/live/wildcard.key
+      # for a pure-mesh deployment with no status page; if the status page IS
+      # published, the tunnel ingress must be changed to an https origin at the
+      # same time or the page will 502.
+      - UPTIME_KUMA_SSL_CERT
+      - UPTIME_KUMA_SSL_KEY
+    volumes:
+      - uptime-kuma-data:/app/data
+      - ${SENTINEL_DATA_DIR}/certs:/certs:ro
+    ports:
+      - "${MESH_BIND_IP}:3001:3001"
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:3001/ || curl -fsSk -o /dev/null https://127.0.0.1:3001/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 8
+      start_period: 60s
+
+# --- Optional status page (§2.2 / Phase 10P) --------------------------------
+# Shipped but OFF by default. Two templates:
+#   internal  — staff-facing, all services, reachable on the mesh at
+#               https://<mesh-ip>:3001/status/internal.
+#   client    — client-facing, published through the tunnel on
+#               status.<firm-domain>, listing only client-visible services
+#               (client portal, Connect, booking, document intake) with NO
+#               infrastructure names and no monitor detail beyond service name.
+#
+# The tunnel ingress for status.<domain> is created by lib/cloudflare.sh. To
+# publish the client page, add a Cloudflare Access BYPASS for the status path
+# ONLY — the rest of the hostname stays behind Access:
+#
+#   . /opt/vibe-sentinel-installer/lib/cloudflare.sh
+#   cf_discover_zone "<firm-domain>"
+#   cf_bypass_machine_endpoint "Kuma status page" "status.<firm-domain>/status/*"
+#
+# Incident posts on the client page are written by the Sentinel incident module
+# only, and only when the QI marks an incident client-visible.

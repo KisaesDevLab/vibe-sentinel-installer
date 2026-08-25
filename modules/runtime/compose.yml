@@ -1,0 +1,66 @@
+# modules/runtime/compose.yml — Falco (modern eBPF) + falcosidekick.
+#
+# Falco runs with the MINIMUM capability set and host PID namespace, NOT
+# privileged (plan §2.2): CAP_BPF, CAP_PERFMON, CAP_SYS_RESOURCE,
+# CAP_SYS_PTRACE. The privileged fallback below is used ONLY when the kernel
+# preflight found no BTF (kernel < 5.8 or stripped) — that fallback is
+# recorded as a risk item (RISK-FALCO-PRIVILEGED) by preflight/kernel.sh.
+
+name: vibe-sentinel
+
+networks:
+  sentinel:
+    name: vibe-sentinel
+
+services:
+  falco:
+    image: ${IMG_FALCO}
+    restart: unless-stopped
+    pid: host                      # host PID visibility — required
+    # NOT privileged: modern eBPF + minimum caps (plan §2.2 / Decision R15)
+    cap_add:
+      - BPF
+      - PERFMON
+      - SYS_RESOURCE
+      - SYS_PTRACE
+    # ── Privileged fallback (kernels without BTF ONLY) ──────────────────
+    # If preflight/kernel.sh set FALCO_PRIVILEGED_FALLBACK=true, replace the
+    # cap_add block above with:
+    #   privileged: true
+    # and keep pid: host. The installer records RISK-FALCO-PRIVILEGED so the
+    # risk assessment carries the exposure until the kernel is upgraded.
+    # ────────────────────────────────────────────────────────────────────
+    command:
+      - /usr/bin/falco
+      - -o
+      - engine.kind=modern_ebpf
+    environment:
+      HOST_ROOT: /host
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro   # read-only — no RW socket anywhere
+      - /proc:/host/proc:ro
+      - /etc:/host/etc:ro
+      - ${SENTINEL_MODULES_DIR}/runtime/falco-rules:/etc/falco/rules.d:ro
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "falco --version >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # Fan-out: Falco events → sentinel-api ingest webhook + ntfy (plan §2.1).
+  falcosidekick:
+    image: ${IMG_FALCOSIDEKICK}
+    restart: unless-stopped
+    environment:
+      WEBHOOK_ADDRESS: http://sentinel-api:8080/ingest/falco
+      NTFY_URL: http://ntfy
+      NTFY_TOPIC: sentinel-alerts
+      LISTENADDRESS: 0.0.0.0
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2801/ping || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5

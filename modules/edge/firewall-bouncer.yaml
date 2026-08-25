@@ -1,0 +1,19 @@
+# crowdsec-firewall-bouncer configuration (nftables backend, host network).
+# API key is injected on first boot by install.sh via:
+#   docker compose exec crowdsec cscli bouncers add firewall-bouncer
+mode: nftables
+update_frequency: 10s
+log_mode: stdout
+api_url: http://127.0.0.1:8080/
+api_key: "${CROWDSEC_BOUNCER_KEY_FIREWALL}"
+nftables:
+  ipv4:
+    enabled: true
+    set-only: false
+    table: crowdsec
+    chain: crowdsec-chain
+  ipv6:
+    enabled: true
+    set-only: false
+    table: crowdsec6
+    chain: crowdsec6-chain

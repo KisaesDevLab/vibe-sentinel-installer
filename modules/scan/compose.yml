@@ -1,0 +1,154 @@
+# modules/scan/compose.yml — Greenbone / OpenVAS (Phase 9). DEFAULT OFF.
+#
+# Authenticated vulnerability scanning of the firm's subnets over the mesh.
+# Results import into `vulnerability_scan`, findings into `vulnerability`, and
+# feed the SLA engine and the semi-annual Vulnerability Assessment Report.
+#
+# WHY IT IS OFF BY DEFAULT: Greenbone is the heaviest thing in the appliance
+# (+2 cores, +4 GB RAM, and a multi-hour first-boot feed sync), and Wazuh's
+# vulnerability detector already covers installed-package CVEs on every agent.
+# Greenbone adds *network-facing* scanning — the printer VLAN, network gear,
+# and anything without an agent. Firms turn it on when they have those.
+#
+# EVERYTHING IS LOOPBACK-BOUND. The web UI is 127.0.0.1:9392 (§2.6); reach it
+# through the mesh with an SSH tunnel or the Sentinel UI proxy. A scanner is a
+# weapon: it must never be reachable from a workstation, let alone the internet.
+#
+# Every service carries `profiles: ["scan"]` as a second safety on top of the
+# module not being merged at all unless `scan` is selected. Compose enables the
+# profile automatically when install.sh names these services explicitly.
+#
+# Storage: its OWN Postgres (gb-pg) and Redis (gb-redis), not the shared
+# Sentinel instance — Greenbone pins its own Postgres extension versions and a
+# feed sync would otherwise be able to stall the control plane's database.
+
+name: vibe-sentinel
+
+networks:
+  sentinel:
+    name: vibe-sentinel
+
+volumes:
+  gb-pg-data:
+  gb-gvmd-data:
+  gb-scap-data:
+  gb-cert-data:
+  gb-vt-data:
+  gb-notus-data:
+  gb-psql-socket:
+  gb-gvmd-socket:
+  gb-ospd-socket:
+  gb-redis-socket:
+
+services:
+  gb-pg:
+    image: ${IMG_GREENBONE_PG}
+    profiles: ["scan"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: gvmd
+      POSTGRES_USER: gvmd
+      POSTGRES_PASSWORD: ${GREENBONE_DB_PASSWORD}
+    volumes:
+      - gb-pg-data:/var/lib/postgresql
+      - gb-psql-socket:/var/run/postgresql
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gvmd -d gvmd"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  gb-redis:
+    image: ${IMG_GREENBONE_REDIS}
+    profiles: ["scan"]
+    restart: unless-stopped
+    volumes:
+      - gb-redis-socket:/run/redis
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -s /run/redis/redis.sock ping | grep -q PONG || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  # Message bus the scanner uses to publish results to gvmd.
+  gb-mqtt:
+    image: ${IMG_GREENBONE_MQTT}
+    profiles: ["scan"]
+    restart: unless-stopped
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h 127.0.0.1 -t '$$SYS/#' -C 1 -W 3 >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+
+  gvmd:
+    image: ${IMG_GREENBONE_GVMD}
+    profiles: ["scan"]
+    restart: unless-stopped
+    environment:
+      GVMD_USER: admin
+      GVMD_PASSWORD: ${GREENBONE_ADMIN_PASSWORD}
+      PGHOST: /var/run/postgresql
+      PGDATABASE: gvmd
+      PGUSER: gvmd
+    volumes:
+      - gb-gvmd-data:/var/lib/gvm
+      - gb-scap-data:/var/lib/gvm/scap-data
+      - gb-cert-data:/var/lib/gvm/cert-data
+      - gb-psql-socket:/var/run/postgresql
+      - gb-gvmd-socket:/run/gvmd
+      - gb-ospd-socket:/run/ospd
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/gvmd/gvmd.sock || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 40
+      start_period: 300s
+
+  ospd-openvas:
+    image: ${IMG_GREENBONE_OSPD_OPENVAS}
+    profiles: ["scan"]
+    restart: unless-stopped
+    # The scanner needs raw sockets to do anything useful (SYN scan, OS
+    # fingerprinting). NET_ADMIN + NET_RAW only — never --privileged.
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      MQTT_BROKER_ADDRESS: gb-mqtt
+      MQTT_BROKER_PORT: "1883"
+    volumes:
+      - gb-vt-data:/var/lib/openvas/plugins
+      - gb-notus-data:/var/lib/notus
+      - gb-ospd-socket:/run/ospd
+      - gb-redis-socket:/run/redis
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/ospd/ospd-openvas.sock || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 40
+      start_period: 300s
+
+  gsa:
+    image: ${IMG_GREENBONE_GSA}
+    profiles: ["scan"]
+    restart: unless-stopped
+    environment:
+      GSAD_GVMD_SOCKET: /run/gvmd/gvmd.sock
+    volumes:
+      - gb-gvmd-socket:/run/gvmd
+    ports:
+      # LOOPBACK ONLY (§2.6). Not the mesh, not 0.0.0.0.
+      - "127.0.0.1:9392:80"
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:80/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s

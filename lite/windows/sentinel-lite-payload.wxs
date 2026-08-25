@@ -1,0 +1,200 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  sentinel-lite-payload.wxs — the Kisaes-authored half of the Windows bundle.
+
+  Everything here is ours: the posture collector and its 4-hour scheduled task,
+  the firm print queues installed over IPP Everywhere, and the printer-egress
+  firewall rules. The third-party pieces (NetBird, Wazuh, Sysmon) are chained
+  by sentinel-lite.wxs, which installs this MSI last.
+
+  Template. lite/generate-lite.sh substitutes @@PLACEHOLDERS@@.
+
+  BUILD:
+      candle.exe sentinel-lite-payload.wxs -ext WixUtilExtension
+      light.exe  sentinel-lite-payload.wixobj -ext WixUtilExtension \
+                 -out payload\sentinel-lite-payload.msi
+
+  ORDER INSIDE THIS MSI: the print-queue and firewall custom actions run after
+  InstallFiles and are deferred/impersonate=no (SYSTEM), because both touch
+  machine-wide state. The firewall action runs LAST: it resolves the gateway
+  over the mesh, and it refuses to install block rules it cannot pair with a
+  working allow rule — so a machine never ends up unable to print at all.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+
+  <?define FirmName    = "@@FIRM@@" ?>
+  <?define FirmSlug    = "@@FIRM_SLUG@@" ?>
+  <?define Domain      = "@@DOMAIN@@" ?>
+  <?define PrintGateway = "@@PRINT_GATEWAY@@" ?>
+
+  <Product Id="*"
+           Name="Sentinel Lite for $(var.FirmName)"
+           Language="1033"
+           Version="1.0.0.0"
+           Manufacturer="Kisaes Dev Lab"
+           UpgradeCode="C81E2B3D-4F60-4B29-AD71-2E3F4A5B6C7D">
+
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Description="Sentinel Lite endpoint components for $(var.FirmName)" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Sentinel Lite is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="PRINTGATEWAY"   Value="$(var.PrintGateway)" Secure="yes" />
+    <Property Id="FIRMNAME"       Value="$(var.FirmName)"     Secure="yes" />
+    <Property Id="SENTINELDOMAIN" Value="$(var.Domain)"       Secure="yes" />
+
+    <!-- PowerShell is the whole delivery mechanism here; fail early and
+         plainly rather than silently skipping the custom actions. -->
+    <Property Id="POWERSHELLEXE">
+      <RegistrySearch Id="POWERSHELLEXE"
+                      Type="raw"
+                      Root="HKLM"
+                      Key="SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell"
+                      Name="Path" />
+    </Property>
+    <Condition Message="Windows PowerShell is required and was not found.">
+      <![CDATA[Installed OR POWERSHELLEXE]]>
+    </Condition>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="VibeSentinel" />
+      </Directory>
+      <Directory Id="CommonAppDataFolder">
+        <Directory Id="DATAFOLDER" Name="VibeSentinel" />
+      </Directory>
+    </Directory>
+
+    <!-- ==================================================================
+         Files
+         ================================================================== -->
+    <ComponentGroup Id="SentinelLiteFiles" Directory="INSTALLFOLDER">
+
+      <Component Id="PostureScript" Guid="*">
+        <File Id="posture.ps1" Source="payload\posture.ps1" KeyPath="yes" />
+      </Component>
+
+      <Component Id="PrintQueueScript" Guid="*">
+        <File Id="install_queues.ps1" Source="payload\install-queues.ps1" KeyPath="yes" />
+      </Component>
+
+      <Component Id="PrintFirewallScript" Guid="*">
+        <File Id="block_printer_egress.ps1" Source="payload\block-printer-egress.ps1" KeyPath="yes" />
+      </Component>
+
+      <Component Id="EnrollmentFacts" Guid="*">
+        <!-- Carries the firm's enrollment facts for support and for the
+             tamper-detection check. NOT world-readable: it holds the Wazuh
+             enrollment password. -->
+        <File Id="enrollment.json" Source="payload\enrollment.json" KeyPath="yes" />
+        <util:PermissionEx User="Administrators" GenericAll="yes" />
+        <util:PermissionEx User="SYSTEM" GenericAll="yes" />
+      </Component>
+
+      <Component Id="RegistryMarker" Guid="*">
+        <RegistryKey Root="HKLM" Key="SOFTWARE\VibeSentinel">
+          <RegistryValue Name="Firm"           Type="string" Value="[FIRMNAME]" KeyPath="yes" />
+          <RegistryValue Name="Domain"         Type="string" Value="[SENTINELDOMAIN]" />
+          <RegistryValue Name="PrintGateway"   Type="string" Value="[PRINTGATEWAY]" />
+          <RegistryValue Name="LiteVersion"    Type="string" Value="1.0.0.0" />
+          <RegistryValue Name="InstalledAt"    Type="string" Value="[Date] [Time]" />
+        </RegistryKey>
+      </Component>
+
+    </ComponentGroup>
+
+    <!-- ==================================================================
+         Posture collection: every 4 hours (plan §6), as SYSTEM.
+         AtStartup too, so a machine that was off during its window reports
+         as soon as it comes back rather than waiting up to four hours.
+         ================================================================== -->
+    <ComponentGroup Id="PostureTask" Directory="INSTALLFOLDER">
+      <Component Id="PostureScheduledTask" Guid="*">
+        <!-- The registry value is only a keypath so the component has one and
+             so an uninstall has something to reverse. The task itself is
+             created by the schtasks custom action below. -->
+        <RegistryValue Root="HKLM" Key="SOFTWARE\VibeSentinel\Tasks"
+                       Name="Posture" Type="string" Value="4h" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- The scheduled task is created by schtasks rather than WiX's XML,
+         because the task must run as SYSTEM with the highest privileges and
+         a 4-hour repetition with no end boundary — which schtasks expresses
+         in one line and WiX does not express at all. -->
+    <CustomAction Id="CreatePostureTask"
+                  Return="check"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /Create /F /RU SYSTEM /RL HIGHEST /SC HOURLY /MO 4 /TN &quot;VibeSentinel\PostureCollection&quot; /TR &quot;powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \&quot;[INSTALLFOLDER]posture.ps1\&quot;&quot;" />
+
+    <CustomAction Id="RemovePostureTask"
+                  Return="ignore"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /Delete /F /TN &quot;VibeSentinel\PostureCollection&quot;" />
+
+    <!-- One immediate run so the asset appears in the Sentinel UI with full
+         posture within minutes of the install, not four hours later. The
+         Phase 7 acceptance test is "< 10 min from MSI to full posture". -->
+    <CustomAction Id="RunPostureNow"
+                  Return="ignore"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /Run /TN &quot;VibeSentinel\PostureCollection&quot;" />
+
+    <!-- ==================================================================
+         Print: queues over IPP Everywhere, then the egress block rules.
+         ================================================================== -->
+    <CustomAction Id="InstallPrintQueues"
+                  Return="ignore"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]install-queues.ps1&quot; -Gateway &quot;[PRINTGATEWAY]&quot;" />
+
+    <!-- Return=ignore on the queue install but check on the firewall: a
+         missing queue is an inconvenience, a missing isolation rule is a
+         control failure. The script itself refuses to install block rules it
+         cannot pair with a working allow rule. -->
+    <CustomAction Id="ApplyPrintFirewall"
+                  Return="check"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]block-printer-egress.ps1&quot; -Gateway &quot;[PRINTGATEWAY]&quot;" />
+
+    <CustomAction Id="RemovePrintFirewall"
+                  Return="ignore"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;Get-NetFirewallRule -Group 'Vibe Sentinel - Print Isolation' -ErrorAction SilentlyContinue | Remove-NetFirewallRule&quot;" />
+
+    <!-- ==================================================================
+         Sequencing
+         ================================================================== -->
+    <InstallExecuteSequence>
+      <Custom Action="CreatePostureTask"   After="InstallFiles">NOT Installed</Custom>
+      <Custom Action="InstallPrintQueues"  After="CreatePostureTask">NOT Installed</Custom>
+      <Custom Action="ApplyPrintFirewall"  After="InstallPrintQueues">NOT Installed</Custom>
+      <Custom Action="RunPostureNow"       After="ApplyPrintFirewall">NOT Installed</Custom>
+
+      <Custom Action="RemovePostureTask"   Before="RemoveFiles">REMOVE="ALL"</Custom>
+      <Custom Action="RemovePrintFirewall" Before="RemoveFiles">REMOVE="ALL"</Custom>
+    </InstallExecuteSequence>
+
+    <Feature Id="Main" Title="Sentinel Lite" Level="1" Absent="disallow">
+      <ComponentGroupRef Id="SentinelLiteFiles" />
+      <ComponentGroupRef Id="PostureTask" />
+    </Feature>
+
+  </Product>
+</Wix>

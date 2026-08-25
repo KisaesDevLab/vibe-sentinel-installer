@@ -1,0 +1,306 @@
+{
+  "schema_version": 1,
+  "sentinel_version": "0.1.0",
+  "note": "Every third-party image the appliance runs, with the tag it is built and tested against. The digest fields are PLACEHOLDERS: Phase 0 (the 60-day Kisaes dogfood baseline) pins every one of them to a real sha256 after the image has run in production for the baseline period. lib/secrets.sh prefers the digest and falls back to the tag while the placeholder 'sha256:TODO-pin-during-phase0' is present, so the appliance is installable today and immutable once Phase 0 lands. Until then, an upstream retag can change what runs on a firm's host without anyone noticing, which is exactly the drift SENT-V-SENT-001 exists to catch.",
+  "digest_placeholder": "sha256:TODO-pin-during-phase0",
+  "harness_gating": {
+    "note": "harness_passed records whether the detection/integration harness has been run against THIS tag. upgrade/upgrade.sh REFUSES to move any image with harness_gated:true unless harness_passed is true for the target version. These five families are gated because a silent break in them does not look like an outage: Uptime Kuma's socket.io API is unversioned and changes between releases (Phase 0 note (c)); Vaultwarden migrates its schema on first boot with no supported downgrade and holds the firm's entire credential set; NetBird carries every agent's only path home; Authentik is the IdP for the Sentinel UI; Wazuh IS the detection engine, so a broken decoder set reads as 'quiet' rather than 'down'.",
+    "gated_families": ["uptime-kuma", "vaultwarden", "netbird", "authentik", "wazuh"]
+  },
+  "images": {
+    "postgres": {
+      "repo": "postgres",
+      "tag": "16-alpine",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": true,
+      "used_by": ["core"],
+      "note": "Single shared instance. Databases: sentinel, authentik, vaultwarden, vibe_print (Decision 19)."
+    },
+    "redis": {
+      "repo": "redis",
+      "tag": "7-alpine",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": true,
+      "used_by": ["core"],
+      "note": "BullMQ queues for sentinel-worker and the Authentik task broker."
+    },
+    "authentik": {
+      "repo": "ghcr.io/goauthentik/server",
+      "tag": "2024.8.3",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": true,
+      "harness_passed": false,
+      "used_by": ["core"],
+      "note": "One image, two services (server + worker). Serves the Sentinel UI and NetBird only (Decision 21). Authentik release trains rename settings between versions; the harness checks the OIDC apps and group mappings still resolve."
+    },
+    "wazuh-manager": {
+      "repo": "wazuh/wazuh-manager",
+      "tag": "4.9.0",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": true,
+      "harness_passed": false,
+      "used_by": ["core"],
+      "note": "Manager, indexer, and dashboard must move together — they refuse mixed versions."
+    },
+    "wazuh-indexer": {
+      "repo": "wazuh/wazuh-indexer",
+      "tag": "4.9.0",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": true,
+      "harness_passed": false,
+      "used_by": ["core"],
+      "note": "OpenSearch. Needs vm.max_map_count >= 262144 (set by preflight/sysctl.sh)."
+    },
+    "wazuh-dashboard": {
+      "repo": "wazuh/wazuh-dashboard",
+      "tag": "4.9.0",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": true,
+      "harness_passed": false,
+      "used_by": ["core"],
+      "note": "Exposed alongside the Sentinel UI with Wazuh RBAC mapped from Sentinel roles."
+    },
+    "falco": {
+      "repo": "falcosecurity/falco",
+      "tag": "0.38.2",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": true,
+      "used_by": ["runtime"],
+      "note": "Modern eBPF probe with CAP_BPF/CAP_PERFMON/CAP_SYS_RESOURCE/CAP_SYS_PTRACE, NOT privileged. Privileged fallback only on kernels without BTF, recorded as a risk item. Plan §2.2 requires this image be digest-pinned."
+    },
+    "falcosidekick": {
+      "repo": "falcosecurity/falcosidekick",
+      "tag": "2.29.0",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": true,
+      "used_by": ["runtime"],
+      "note": "Forwards Falco events into sentinel-api."
+    },
+    "crowdsec": {
+      "repo": "crowdsecurity/crowdsec",
+      "tag": "v1.6.3",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": true,
+      "used_by": ["edge"],
+      "note": "LAPI on loopback :8080. Parsers include the Vaultwarden log collection used by the tunnel-mode posture."
+    },
+    "cs-firewall-bouncer": {
+      "repo": "crowdsecurity/cs-firewall-bouncer",
+      "tag": "v0.0.31",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": true,
+      "used_by": ["edge"],
+      "note": "nftables bouncer on the host. The Cloudflare-side bouncer is a Worker, deployed by modules/edge/cloudflare-worker-bouncer.sh."
+    },
+    "netbird-management": {
+      "repo": "netbirdio/management",
+      "tag": "0.30.2",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": true,
+      "harness_passed": false,
+      "used_by": ["mesh"],
+      "note": "gRPC through the tunnel with http2Origin=true and an Access BYPASS policy (§2.2). Management/signal/dashboard/relay move together."
+    },
+    "netbird-signal": {
+      "repo": "netbirdio/signal",
+      "tag": "0.30.2",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": true,
+      "harness_passed": false,
+      "used_by": ["mesh"],
+      "note": "gRPC; same tunnel and bypass treatment as management."
+    },
+    "netbird-dashboard": {
+      "repo": "netbirdio/dashboard",
+      "tag": "2.9.0",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": true,
+      "harness_passed": false,
+      "used_by": ["mesh"],
+      "note": "nb-admin.<domain>, behind Cloudflare Access. Dashboard versioning is independent of the management train."
+    },
+    "netbird-relay": {
+      "repo": "netbirdio/relay",
+      "tag": "0.30.2",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": true,
+      "harness_passed": false,
+      "used_by": ["mesh/relay"],
+      "note": "OPT-IN sub-module, OFF by default. Enabling it opens one UDP port (3478) and is the single approved exception to SENT-E-005 — a logged, QI-approved change (Decision 17)."
+    },
+    "vaultwarden": {
+      "repo": "vaultwarden/server",
+      "tag": "1.32.5-alpine",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": true,
+      "harness_passed": false,
+      "used_by": ["keys"],
+      "note": "PostgreSQL backend on the shared instance, separate database (Decision 19). Migrates its schema on first boot with no supported downgrade — an unverified jump is a one-way door for the firm's password vault. Harness must confirm: org policies still apply via the API, ORG_EVENTS_ENABLED still emits, and an unauthenticated /admin request is challenged in tunnel mode."
+    },
+    "uptime-kuma": {
+      "repo": "louislam/uptime-kuma",
+      "tag": "2.0.0-beta.3",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": true,
+      "harness_passed": false,
+      "used_by": ["pulse"],
+      "note": "v2 line, pinned per Phase 0 note (c). The socket.io API is UNVERSIONED and has changed between releases; the Sentinel monitor adapter is written against this exact build. A break here is silent — monitors simply stop being managed. Phase 0 must confirm the running v2 tag and set harness_passed."
+    },
+    "greenbone-gvmd": {
+      "repo": "greenbone/gvmd",
+      "tag": "stable",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": false,
+      "used_by": ["scan"],
+      "note": "Greenbone Community Edition. scan is DEFAULT OFF. 'stable' is a moving tag upstream — Phase 0 pinning matters more here than anywhere else."
+    },
+    "greenbone-ospd-openvas": {
+      "repo": "greenbone/ospd-openvas",
+      "tag": "stable",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": false,
+      "used_by": ["scan"],
+      "note": "The scanner itself. NET_ADMIN + NET_RAW only, never privileged."
+    },
+    "greenbone-gsa": {
+      "repo": "greenbone/gsa",
+      "tag": "stable",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": false,
+      "used_by": ["scan"],
+      "note": "Web UI, published on 127.0.0.1:9392 ONLY (§2.6)."
+    },
+    "greenbone-pg": {
+      "repo": "greenbone/pg-gvm",
+      "tag": "stable",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": false,
+      "used_by": ["scan"],
+      "note": "Greenbone's own Postgres with its pinned extensions — deliberately NOT the shared Sentinel instance, so a feed sync cannot stall the control plane."
+    },
+    "greenbone-redis": {
+      "repo": "greenbone/redis-server",
+      "tag": "stable",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": false,
+      "used_by": ["scan"],
+      "note": "Unix-socket Redis used by the scanner for VT state."
+    },
+    "greenbone-mqtt": {
+      "repo": "eclipse-mosquitto",
+      "tag": "2",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": false,
+      "used_by": ["scan"],
+      "note": "Result bus between ospd-openvas and gvmd."
+    },
+    "ntfy": {
+      "repo": "binwiederhier/ntfy",
+      "tag": "v2.11.0",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": true,
+      "used_by": ["core"],
+      "note": "Self-hosted push, mesh-bound on 8085 (§2.6). Default notification channel alongside SMTP."
+    },
+    "lego": {
+      "repo": "goacme/lego",
+      "tag": "v4.19.2",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": true,
+      "used_by": ["core"],
+      "note": "sentinel-certs sidecar. ACME DNS-01 through the Cloudflare API for the *.<firm-domain> wildcard, distributed to Vaultwarden, Uptime Kuma, Vibe Print, Authentik, and the Sentinel UI. No private CA anywhere (§2.6)."
+    },
+    "cloudflared": {
+      "repo": "cloudflare/cloudflared",
+      "tag": "2024.10.1",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": true,
+      "used_by": ["core"],
+      "note": "Tunnel connector. Outbound only — the appliance opens no inbound port (§2.2)."
+    },
+    "restic": {
+      "repo": "restic/restic",
+      "tag": "0.17.3",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": true,
+      "used_by": ["core"],
+      "note": "Built-in backup job, compose profile 'no-vault'. Only enabled for firms that do not run Vibe Vault, so Sentinel is never unbacked (§2.4)."
+    },
+    "sentinel-api": {
+      "repo": "ghcr.io/kisaesdevlab/sentinel-api",
+      "tag": "0.1.0",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": true,
+      "used_by": ["core"],
+      "first_party": true,
+      "note": "Kisaes-built. Multi-arch amd64/arm64. Runs Drizzle migrations on boot."
+    },
+    "sentinel-web": {
+      "repo": "ghcr.io/kisaesdevlab/sentinel-web",
+      "tag": "0.1.0",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": true,
+      "used_by": ["core"],
+      "first_party": true,
+      "note": "Kisaes-built. Multi-arch amd64/arm64."
+    },
+    "sentinel-worker": {
+      "repo": "ghcr.io/kisaesdevlab/sentinel-worker",
+      "tag": "0.1.0",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": true,
+      "used_by": ["core"],
+      "first_party": true,
+      "note": "Kisaes-built. Hosts the Uptime Kuma socket.io monitor adapter and the correlation engine."
+    },
+    "vibe-print": {
+      "repo": "ghcr.io/kisaesdevlab/vibe-print",
+      "tag": "0.1.0",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": true,
+      "used_by": ["print"],
+      "first_party": true,
+      "note": "Kisaes-built. THE SAME IMAGE as the standalone Vibe Print product (Decision 22); the module adds only the Sentinel integration layer. CUPS + IPP Everywhere + legacy raw-9100 listener."
+    },
+    "vibe-print-release": {
+      "repo": "ghcr.io/kisaesdevlab/vibe-print-release",
+      "tag": "0.1.0",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": true,
+      "used_by": ["print"],
+      "first_party": true,
+      "note": "Kisaes-built. Web/mobile-web PIN release for HELD jobs only. No badge hardware at launch (Decision 23)."
+    },
+    "vibe-print-scanner-inbox": {
+      "repo": "ghcr.io/kisaesdevlab/vibe-print-scanner-inbox",
+      "tag": "0.1.0",
+      "digest": "sha256:TODO-pin-during-phase0",
+      "harness_gated": false,
+      "harness_passed": true,
+      "used_by": ["print"],
+      "first_party": true,
+      "note": "Kisaes-built. SMB/FTPS/SMTP receiver so scanner output lands in the firm's document intake instead of a printer's internal storage or an open share."
+    }
+  }
+}

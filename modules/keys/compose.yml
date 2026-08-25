@@ -1,0 +1,100 @@
+# modules/keys/compose.yml — Vaultwarden, the firm password manager (Phase 7K).
+#
+# Storage: PostgreSQL on the SHARED Sentinel instance, separate database
+# `vaultwarden` (Decision 19) — one backup path, one restore test. The
+# database is created by modules/core/db-init/10-create-databases.sh.
+#
+# Two published modes (§2.2), chosen in the wizard and recorded on the firm
+# record. Both use DOMAIN=https://vault.<firm-domain>; what differs is how
+# that hostname is published:
+#   tunnel     — Cloudflare Tunnel, NO Access login on the client paths
+#                (Bitwarden desktop/browser/mobile cannot complete an
+#                interactive Access login). Protected by Vaultwarden's own
+#                auth + enforced 2FA, CF WAF managed rules, the rate-limit
+#                rules and the /admin-only Access policy that
+#                tunnel-mode-setup.sh creates, and CrowdSec on the logs.
+#                cloudflared reaches http://vaultwarden:80 (lib/cloudflare.sh).
+#   mesh_only  — no public hostname; vault.<domain> is an A record at the mesh
+#                IP. Vaultwarden itself terminates TLS with the §2.6 wildcard
+#                cert: set ROCKET_TLS in /etc/vibe-sentinel/.env (see
+#                env.schema) and it is served on ${MESH_BIND_IP}:443.
+#
+# ADMIN_TOKEN is deliberately ABSENT at rest — the /admin panel is disabled in
+# production and is only turned on by maintenance-mode.sh, which auto-reverts
+# after 30 minutes and writes a change record.
+
+name: vibe-sentinel
+
+networks:
+  sentinel:
+    name: vibe-sentinel
+
+volumes:
+  vaultwarden-data:
+
+secrets:
+  smtp_password:
+    file: /etc/vibe-sentinel/secrets/smtp_password
+
+services:
+  vaultwarden:
+    image: ${IMG_VAULTWARDEN}
+    restart: unless-stopped
+    # List form (not a map) so the mode-dependent keys below can be passed
+    # through as bare names: unset in the environment means "not set on the
+    # container at all", which is what Vaultwarden needs for ADMIN_TOKEN and
+    # ROCKET_TLS. A map with an empty value would set them to "".
+    environment:
+      # --- Storage: shared Postgres, separate database (Decision 19) --------
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@sentinel-db:5432/vaultwarden
+      - DATA_FOLDER=/data
+      - ROCKET_PORT=80
+      - DOMAIN=${VAULTWARDEN_DOMAIN}
+      # --- Enrollment policy (Phase 7K): invitation-only, no open signups ---
+      - SIGNUPS_ALLOWED=false
+      - INVITATIONS_ALLOWED=true
+      - SIGNUPS_VERIFY=true
+      - SHOW_PASSWORD_HINT=false
+      # --- Org events: must be on so there is something to ingest into
+      # --- vault_event for the SENT-K-* rules and the REQ-028 adoption report.
+      - ORG_EVENTS_ENABLED=true
+      - EVENTS_DAYS_RETAIN=${EVENTS_DAYS_RETAIN}
+      # --- Everything stays on premises -------------------------------------
+      - WEBSOCKET_ENABLED=true
+      - PUSH_ENABLED=false
+      - SENDS_ALLOWED=false
+      - HIBP_API_KEY=
+      # --- SMTP from Sentinel's mail settings (same relay Authentik uses) ---
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_SECURITY=starttls
+      - SMTP_FROM=${SMTP_FROM}
+      - SMTP_FROM_NAME=Vibe Sentinel
+      - SMTP_USERNAME=${SMTP_USERNAME}
+      - SMTP_PASSWORD_FILE=/run/secrets/smtp_password
+      # --- Mode-dependent, intentionally unset at rest ----------------------
+      # ADMIN_TOKEN: written only by maintenance-mode.sh (argon2 hash), for 30
+      #   minutes, with a change record; auto-reverted.
+      # ROCKET_TLS:  set only in mesh_only mode, to
+      #   {certs="/certs/live/wildcard.crt",key="/certs/live/wildcard.key"}
+      - ADMIN_TOKEN
+      - ROCKET_TLS
+    secrets: [smtp_password]
+    volumes:
+      - vaultwarden-data:/data
+      - ${SENTINEL_DATA_DIR}/certs:/certs:ro
+      # Maintenance-mode marker the Sentinel API polls to build the change
+      # record and to prove the auto-revert happened.
+      - ${SENTINEL_DATA_DIR}/keys:/var/lib/vibe-sentinel/keys
+    ports:
+      # Mesh-side listener. In mesh_only mode this IS the published endpoint
+      # (TLS terminated by Vaultwarden with the wildcard cert). In tunnel mode
+      # it is a harmless mesh fallback — the published path is the tunnel.
+      - "${MESH_BIND_IP}:443:80"
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:80/alive || curl -fsSk -o /dev/null https://127.0.0.1:80/alive || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 8
+      start_period: 60s

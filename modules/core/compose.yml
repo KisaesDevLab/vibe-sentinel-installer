@@ -1,0 +1,308 @@
+# modules/core/compose.yml — Vibe Sentinel core (required module).
+# sentinel web/api/worker/db/redis + Authentik + certs sidecar + ntfy +
+# Wazuh manager/indexer/dashboard + cloudflared tunnel connector +
+# built-in restic backup job (profile "no-vault", §2.4).
+#
+# All images are ${IMG_*} variables resolved from versions/manifest.json
+# (digest-pinned once Phase 0 pins land). Cross-module ordering is enforced
+# by install.sh health gates, not depends_on, so each module file stands alone.
+
+name: vibe-sentinel
+
+networks:
+  sentinel:
+    name: vibe-sentinel
+
+volumes:
+  pg-data:
+  redis-data:
+  authentik-media:
+  wazuh-manager-config:
+  wazuh-manager-data:
+  wazuh-indexer-data:
+  ntfy-data:
+
+secrets:
+  pg_password:
+    file: /etc/vibe-sentinel/secrets/pg_password
+  cf_api_token:
+    file: /etc/vibe-sentinel/secrets/cf_api_token
+  tunnel_token:
+    file: /etc/vibe-sentinel/secrets/tunnel_token
+  restic_password:
+    file: /etc/vibe-sentinel/secrets/restic_password
+
+services:
+  # --- PostgreSQL 16: ONE instance; init script creates the sentinel,
+  # --- authentik, vaultwarden, and vibe_print databases (plan §2.1/§2.4).
+  sentinel-db:
+    image: ${IMG_POSTGRES}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+      POSTGRES_DB: sentinel
+    secrets: [pg_password]
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ${SENTINEL_MODULES_DIR}/core/db-init:/docker-entrypoint-initdb.d:ro
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d sentinel"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  sentinel-redis:
+    image: ${IMG_REDIS}
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # --- Authentik (core, not mesh — Decision R2). Serves Sentinel UI + NetBird
+  # --- only (Decision 21). Bootstrap env creates tenant + QI admin.
+  authentik-server:
+    image: ${IMG_AUTHENTIK}
+    restart: unless-stopped
+    command: server
+    environment:
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY}
+      AUTHENTIK_POSTGRESQL__HOST: sentinel-db
+      AUTHENTIK_POSTGRESQL__USER: ${POSTGRES_USER}
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${POSTGRES_PASSWORD}
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_REDIS__HOST: sentinel-redis
+      AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD}
+      AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN}
+      AUTHENTIK_BOOTSTRAP_EMAIL: ${AUTHENTIK_BOOTSTRAP_EMAIL}
+      AUTHENTIK_EMAIL__HOST: ${SMTP_HOST}
+      AUTHENTIK_EMAIL__PORT: ${SMTP_PORT}
+      AUTHENTIK_EMAIL__USERNAME: ${SMTP_USERNAME}
+      AUTHENTIK_EMAIL__USE_TLS: "true"
+      AUTHENTIK_EMAIL__FROM: ${SMTP_FROM}
+    volumes:
+      - authentik-media:/media
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD", "ak", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+  authentik-worker:
+    image: ${IMG_AUTHENTIK}
+    restart: unless-stopped
+    command: worker
+    environment:
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY}
+      AUTHENTIK_POSTGRESQL__HOST: sentinel-db
+      AUTHENTIK_POSTGRESQL__USER: ${POSTGRES_USER}
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${POSTGRES_PASSWORD}
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_REDIS__HOST: sentinel-redis
+    volumes:
+      - authentik-media:/media
+    networks: [sentinel]
+
+  # --- sentinel-certs: ACME DNS-01 wildcard sidecar (lego + Cloudflare).
+  # --- Obtains *.<domain>, renews daily, distributes into the shared certs
+  # --- dir consumed by Vaultwarden, Uptime Kuma, Vibe Print, Authentik, UI.
+  sentinel-certs:
+    image: ${IMG_LEGO}
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/opt/certs/certs-loop.sh"]
+    environment:
+      SENTINEL_DOMAIN: ${SENTINEL_DOMAIN}
+      ACME_EMAIL: ${SMTP_FROM}
+      CLOUDFLARE_DNS_API_TOKEN_FILE: /run/secrets/cf_api_token
+    secrets: [cf_api_token]
+    volumes:
+      - ${SENTINEL_MODULES_DIR}/core/certs:/opt/certs:ro
+      - ${SENTINEL_DATA_DIR}/certs:/certs
+    networks: [sentinel]
+
+  # --- Cloudflare Tunnel connector (publishes the §2.6 tunnel hostnames).
+  cloudflared:
+    image: ${IMG_CLOUDFLARED}
+    restart: unless-stopped
+    command: ["sh", "-c", "cloudflared tunnel --no-autoupdate run --token \"$$(cat /run/secrets/tunnel_token)\""]
+    secrets: [tunnel_token]
+    networks: [sentinel]
+
+  # --- Sentinel control plane -------------------------------------------------
+  sentinel-api:
+    image: ${IMG_SENTINEL_API}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@sentinel-db:5432/sentinel
+      REDIS_URL: redis://sentinel-redis:6379
+      API_SECRET: ${SENTINEL_API_SECRET}
+      AUTHENTIK_URL: http://authentik-server:9000
+      SENTINEL_DOMAIN: ${SENTINEL_DOMAIN}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USERNAME: ${SMTP_USERNAME}
+      SMTP_FROM: ${SMTP_FROM}
+      AI_MODE: ${SENTINEL_AI_MODE}
+      WAZUH_API_URL: https://wazuh-manager:55000
+      WAZUH_API_PASSWORD: ${WAZUH_API_PASSWORD}
+    volumes:
+      - /etc/vibe-sentinel/preflight-risks.json:/etc/vibe-sentinel/preflight-risks.json:ro
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  sentinel-worker:
+    image: ${IMG_SENTINEL_WORKER}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@sentinel-db:5432/sentinel
+      REDIS_URL: redis://sentinel-redis:6379
+      OPENSEARCH_URL: https://wazuh-indexer:9200
+      AI_MODE: ${SENTINEL_AI_MODE}
+    networks: [sentinel]
+
+  sentinel-web:
+    image: ${IMG_SENTINEL_WEB}
+    restart: unless-stopped
+    environment:
+      API_URL: http://sentinel-api:8080
+    volumes:
+      - ${SENTINEL_DATA_DIR}/certs:/certs:ro
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # --- ntfy (self-hosted push; mesh-bound host port 8085 per §2.6) -----------
+  ntfy:
+    image: ${IMG_NTFY}
+    restart: unless-stopped
+    command: ["serve"]
+    environment:
+      NTFY_BASE_URL: https://ntfy.${SENTINEL_DOMAIN}
+      NTFY_BEHIND_PROXY: "false"
+      NTFY_CACHE_FILE: /var/lib/ntfy/cache.db
+      NTFY_AUTH_FILE: /var/lib/ntfy/auth.db
+      NTFY_AUTH_DEFAULT_ACCESS: deny-all
+    volumes:
+      - ntfy-data:/var/lib/ntfy
+      - ${SENTINEL_DATA_DIR}/certs:/certs:ro
+    ports:
+      - "${MESH_BIND_IP}:8085:80"
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/v1/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+
+  # --- Wazuh single-node --------------------------------------------------
+  # Agent ports 1514/1515 bind to the mesh interface ONLY (§2.2/§2.6);
+  # API 55000 loopback. Docker socket read-only for the docker listener.
+  wazuh-manager:
+    image: ${IMG_WAZUH_MANAGER}
+    restart: unless-stopped
+    hostname: wazuh-manager
+    environment:
+      INDEXER_URL: https://wazuh-indexer:9200
+      INDEXER_USERNAME: admin
+      INDEXER_PASSWORD: ${WAZUH_API_PASSWORD}
+      API_USERNAME: wazuh-wui
+      API_PASSWORD: ${WAZUH_API_PASSWORD}
+      WAZUH_ENROLLMENT_PASSWORD: ${WAZUH_ENROLLMENT_PASSWORD}
+    ports:
+      - "${MESH_BIND_IP}:1514:1514"
+      - "${MESH_BIND_IP}:1515:1515"
+      - "127.0.0.1:55000:55000"
+    volumes:
+      - wazuh-manager-config:/wazuh-config-mount
+      - wazuh-manager-data:/var/ossec/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "/var/ossec/bin/wazuh-control status | grep -q 'wazuh-analysisd is running' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 120s
+
+  wazuh-indexer:
+    image: ${IMG_WAZUH_INDEXER}
+    restart: unless-stopped
+    hostname: wazuh-indexer
+    environment:
+      OPENSEARCH_JAVA_OPTS: "-Xms1g -Xmx1g"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      - wazuh-indexer-data:/var/lib/wazuh-indexer
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk https://127.0.0.1:9200/_cluster/health -u admin:admin | grep -Eq '\"status\":\"(green|yellow)\"' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 20
+      start_period: 180s
+
+  wazuh-dashboard:
+    image: ${IMG_WAZUH_DASHBOARD}
+    restart: unless-stopped
+    hostname: wazuh-dashboard
+    environment:
+      INDEXER_URL: https://wazuh-indexer:9200
+      WAZUH_API_URL: https://wazuh-manager
+      API_USERNAME: wazuh-wui
+      API_PASSWORD: ${WAZUH_API_PASSWORD}
+    networks: [sentinel]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk https://127.0.0.1:5601/status -o /dev/null || curl -s http://127.0.0.1:5601/status -o /dev/null || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 120s
+
+  # --- Built-in restic backup (§2.4) — ONLY for firms without Vibe Vault.
+  # --- Enabled by install.sh with:  --profile no-vault
+  sentinel-backup:
+    image: ${IMG_RESTIC}
+    profiles: ["no-vault"]
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/opt/backup/backup-loop.sh"]
+    environment:
+      RESTIC_REPOSITORY: ${RESTIC_REPOSITORY}
+      RESTIC_PASSWORD_FILE: /run/secrets/restic_password
+      BACKUP_WINDOW: ${BACKUP_WINDOW}
+      PGHOST: sentinel-db
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    secrets: [restic_password]
+    volumes:
+      - ${SENTINEL_MODULES_DIR}/core/backup:/opt/backup:ro
+      - ${SENTINEL_DATA_DIR}:/data/sentinel:ro
+      - ${SENTINEL_DATA_DIR}/restic-repo:/var/lib/vibe-sentinel/restic-repo
+    networks: [sentinel]
