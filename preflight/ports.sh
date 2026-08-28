@@ -1,40 +1,29 @@
 #!/usr/bin/env bash
 # preflight/ports.sh — §2.6 host port map conflict check, including against
-# other Vibe appliances sharing the host. Sentinel binds:
-#   1514/tcp, 1515/tcp   Wazuh agent enrollment/events (mesh interface)
-#   55000/tcp            Wazuh API (loopback)
-#   9200/tcp             OpenSearch (loopback)
-#   443/tcp              Vaultwarden (mesh interface, mesh_only mode)    [keys]
-#   3001/tcp             Uptime Kuma (mesh interface)                   [pulse]
-#   8632/tcp             Vibe Print gateway + admin UI (mesh interface) [print]
-#   8085/tcp             ntfy (mesh interface)
-#   8080/tcp             CrowdSec LAPI (loopback)                        [edge]
-#   9392/tcp             Greenbone dashboard (loopback)                  [scan]
-#   3478/udp             NetBird relay — ONLY if the opt-in relay is enabled
+# other Vibe appliances sharing the host.
 #
-# TWO DEFECTS FIXED 2026-08-28, both of which made this check quieter than it
-# looked:
+# THE PORT MAP IS NOT IN THIS FILE ANY MORE. It is read from each selected
+# module's manifest.json (`hostPorts`), which is the same file the appliance's
+# console reads. The hand-maintained copy that used to live here had already
+# drifted from reality in both directions: it was missing 443 (Vaultwarden) and
+# 3001 (Uptime Kuma) entirely, and it still listed 631 and 9100 for a print
+# module that no longer publishes them. Neither gap was visible from this file.
 #
-#   1. 443 was never checked. Vaultwarden binds ${MESH_BIND_IP}:443 in
-#      mesh_only mode and the Vibe Appliance's Caddy binds 0.0.0.0:443 — a
-#      guaranteed collision on a shared host that this file walked straight
-#      past. 3001 (Uptime Kuma) was missing for the same reason.
+# Two further defects fixed 2026-08-28:
+#
+#   1. 443 was never checked, so the one guaranteed collision on a host shared
+#      with the Vibe Appliance — its Caddy on 0.0.0.0:443 against Vaultwarden's
+#      <mesh-ip>:443 in mesh_only mode — was walked straight past.
 #   2. `grep docker-proxy` treated EVERY docker-published port on the host as
 #      "ours on a re-run". docker-proxy is the process behind every container
 #      publish from any project, so the one conflict class this check exists to
-#      find — another Vibe appliance already owning the port — was precisely
-#      the one it ignored. Ownership is now decided by asking Docker which
-#      compose project publishes the port, not by the process name.
-#
-# The print module's entry shrank from 631/9100/8632/445/21/2525/30000-30009 to
-# a single port when it was retargeted onto the image the Vibe-Printer repo
-# actually publishes: that gateway dials OUT to printers and listens only on
-# its own API port. See modules/print/compose.yml.
+#      find was precisely the one it ignored. Ownership now comes from asking
+#      Docker which compose project publishes the port.
 # shellcheck shell=bash
 
 # Ports published by containers in OUR compose project. Anything listening on a
-# port that is not in this set is somebody else's, including another Vibe
-# appliance's container — which is exactly what we need to catch.
+# port that is not in this set belongs to somebody else, including another Vibe
+# appliance's container — which is exactly what needs catching.
 _sentinel_published_ports() {
   docker ps --filter 'label=com.docker.compose.project=vibe-sentinel' \
             --format '{{.Ports}}' 2>/dev/null \
@@ -69,7 +58,7 @@ for f in names:
     if not f.endswith('.json') or f.startswith('_'):
         continue
     try:
-        m = json.load(open(os.path.join(d, f)))
+        m = json.load(open(os.path.join(d, f), encoding='utf-8'))
     except Exception:
         continue
     for p in (m.get('hostPorts') or []):
@@ -85,31 +74,44 @@ PYEOF
 }
 
 preflight_ports() {
+  # shellcheck source=../lib/manifests.sh
+  [ -n "${MANIFESTS_ROOT:-}" ] || . "$INSTALLER_ROOT/lib/manifests.sh"
+
   local -a checks=()
-  checks+=("1514/tcp Wazuh agent events")
-  checks+=("1515/tcp Wazuh agent enrollment")
-  checks+=("55000/tcp Wazuh API (loopback)")
-  checks+=("9200/tcp OpenSearch (loopback)")
-  checks+=("8085/tcp ntfy")
-  if module_selected edge;  then checks+=("8080/tcp CrowdSec LAPI (loopback)"); fi
-  if module_selected print; then checks+=("8632/tcp Vibe Print gateway"); fi
-  if module_selected pulse; then checks+=("3001/tcp Uptime Kuma"); fi
-  if module_selected scan;  then checks+=("9392/tcp Greenbone dashboard (loopback)"); fi
-  # Vaultwarden's mesh listener is the published endpoint in mesh_only mode and
-  # a mesh fallback in tunnel mode, so it binds either way.
-  if module_selected keys;  then checks+=("443/tcp Vaultwarden (mesh)"); fi
+  local port proto bind req label line
+
+  # Every non-optional host port the selected modules declare. `optional` marks
+  # a publish that only happens behind a per-module opt-in (NetBird's relay is
+  # the only one today), so it is checked below rather than here — a firm
+  # without the relay must not be told 3478 is in use by something else.
+  while read -r port proto bind req label; do
+    [ -n "$port" ] || continue
+    [ "$req" = "optional" ] && continue
+    checks+=("$port/$proto $label ($bind)")
+  done <<EOF
+$(manifest_host_ports ${SELECTED_MODULES:-core})
+EOF
+
+  # The relay is the ONE possible inbound port on the whole appliance and stays
+  # off until a failed NAT test plus QI consent. Its manifest entry is marked
+  # optional; this is the opt-in that turns it on.
   if [ "$(config_get '.modules.mesh.relay_enabled' 'false')" = "true" ]; then
-    checks+=("3478/udp NetBird relay")
+    checks+=("3478/udp NetBird relay (opt-in)")
+  fi
+
+  if [ ${#checks[@]} -eq 0 ]; then
+    pf_fail "No host ports resolved from the selected modules ($SELECTED_MODULES). Every module ships a manifest.json declaring what it publishes; a missing or unreadable one means this check verified nothing. Look for modules/<id>/manifest.json."
+    return 1
   fi
 
   local ours
   ours="$(_sentinel_published_ports)"
 
-  local entry port proto label conflict=0 listeners
+  local entry conflict=0 listeners proc owner
   for entry in "${checks[@]}"; do
     port="${entry%%/*}"
     proto="$(printf '%s' "$entry" | cut -d/ -f2 | cut -d' ' -f1)"
-    label="${entry#*/tcp }"; label="${label#*/udp }"
+    label="${entry#* }"
     if [ "$proto" = "udp" ]; then
       listeners="$(ss -lnup "sport = :$port" 2>/dev/null | tail -n +2)"
     else
@@ -117,23 +119,22 @@ preflight_ports() {
     fi
     [ -n "$listeners" ] || continue
 
-    # Ours already, from a previous run of this installer.
+    # Already ours, from a previous run of this installer.
     if printf '%s\n' "$ours" | grep -qx "$port"; then
       continue
     fi
 
-    local proc owner
     proc="$(printf '%s' "$listeners" | grep -o 'users:(("[^"]*"' | head -1 | cut -d'"' -f2)"
     if owner="$(_appliance_port_owner "$port")"; then
-      pf_fail "Port $port/$proto ($label) is already published by $owner. Both cannot bind it. Either move Sentinel to its own host, or - for 443 specifically - run Vaultwarden in tunnel mode instead of mesh_only so it does not need the mesh listener. Sentinel's port map is fixed (plan §2.6)."
+      pf_fail "Port $port/$proto ($label) is already published by $owner. Both cannot bind it. Either move Sentinel to its own host, or - for 443 specifically - run Vaultwarden in tunnel mode instead of mesh_only so it does not need the mesh listener. Sentinel's port map is declared in modules/<id>/manifest.json."
     else
-      pf_fail "Port $port/$proto ($label) is already in use by '${proc:-unknown process}'. If another appliance or service owns it, move that service or run Sentinel on a dedicated host. Sentinel's port map is fixed (plan §2.6)."
+      pf_fail "Port $port/$proto ($label) is already in use by '${proc:-unknown process}'. If another appliance or service owns it, move that service or run Sentinel on a dedicated host. Sentinel's port map is declared in modules/<id>/manifest.json."
     fi
     conflict=1
   done
 
   if [ "$conflict" -eq 0 ]; then
-    pf_pass "No conflicts on the Sentinel host port map for selected modules."
+    pf_pass "No conflicts on the Sentinel host port map (${#checks[@]} ports for: $SELECTED_MODULES)."
     return 0
   fi
   return 1

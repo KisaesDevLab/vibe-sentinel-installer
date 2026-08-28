@@ -1,0 +1,58 @@
+name: manifests
+
+# The module manifests are the single source of truth for each module's ports,
+# resource floor, host prerequisites, boot order and upgrade gate - and they
+# are also the contract the Vibe Appliance's console reads. A manifest is only
+# a source of truth while something checks it still describes reality, so this
+# runs on every push.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Optional: gives check-manifests.py full JSON Schema validation instead
+      # of its dependency-free subset. Not required for the script to run.
+      - run: pip install --quiet jsonschema
+
+      # The schema lives in the appliance repo; .schema/ here is a vendored
+      # copy. Fetch the real one so a drifted vendored copy fails CI rather
+      # than quietly validating against yesterday's contract.
+      - name: Fetch the appliance's manifest schema
+        id: upstream
+        continue-on-error: true
+        run: |
+          curl -fsSL -o /tmp/appliance-manifest.schema.json \
+            https://raw.githubusercontent.com/KisaesDevLab/Vibe-Appliance/main/console/manifest.schema.json
+          echo "fetched=true" >> "$GITHUB_OUTPUT"
+
+      - name: Check manifests against compose, versions and install.sh
+        run: |
+          if [ "${{ steps.upstream.outputs.fetched }}" = "true" ]; then
+            export VIBE_APPLIANCE_SCHEMA=/tmp/appliance-manifest.schema.json
+          else
+            echo "::warning::Could not fetch the appliance schema; the vendored"\
+                 "copy is validated for shape but NOT checked for drift."
+          fi
+          python3 scripts/check-manifests.py
+
+      - name: Shell syntax
+        run: |
+          rc=0
+          for f in install.sh uninstall.sh upgrade/upgrade.sh \
+                   lib/*.sh preflight/*.sh wizard/*.sh modules/*/*.sh \
+                   lite/generate-lite.sh; do
+            [ -f "$f" ] || continue
+            bash -n "$f" || { echo "syntax error in $f"; rc=1; }
+          done
+          exit "$rc"

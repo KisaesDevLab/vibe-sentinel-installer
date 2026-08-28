@@ -3,14 +3,15 @@
 # host with other Vibe appliances or run dedicated; either way these minimums
 # must be FREE, not merely installed.
 #
-#   core                4 cores / 8 GB   (includes Authentik)
-#   +mesh               1 core  / 1 GB
-#   +keys               0.5 c   / 512 MB
-#   +pulse              0.5 c   / 512 MB
-#   +print              0.5 c   / 512 MB
-#   +scan               2 cores / 4 GB
+# THE FLOORS ARE NOT IN THIS FILE ANY MORE. Each module declares its own in
+# modules/<id>/manifest.json (`resources`), which is the same file the
+# appliance's console reads to decide whether the Enable button can even be
+# offered on a given host. The `case` that used to live here was a third copy
+# of the same table - after install.sh's boot order and README.md's module
+# table - and nothing kept the three in step.
 #
-# Disk is computed from agent count × retention with 30% headroom.
+# Disk is computed from agent count × retention with 30% headroom, and stays
+# here: it is one formula over firm inputs, not a per-module constant.
 # shellcheck shell=bash
 
 # Sizing constants — from the Phase 0 sizing table. PLACEHOLDER values until
@@ -26,17 +27,19 @@ preflight_resources() {
   agents="$(config_get '.firm.agent_count_estimate' "${AGENT_COUNT_ESTIMATE:-10}")"
   retention_days="$(config_get '.retention.warm_days' "${RETENTION_WARM_DAYS:-365}")"
 
-  # --- CPU / RAM requirement from selected modules (tenths of a core, MB) ---
-  local need_cpu10=40 need_mem=8192 m
-  for m in ${SELECTED_MODULES:-core}; do
-    case "$m" in
-      mesh)  need_cpu10=$((need_cpu10 + 10)); need_mem=$((need_mem + 1024)) ;;
-      keys)  need_cpu10=$((need_cpu10 + 5));  need_mem=$((need_mem + 512)) ;;
-      pulse) need_cpu10=$((need_cpu10 + 5));  need_mem=$((need_mem + 512)) ;;
-      print) need_cpu10=$((need_cpu10 + 5));  need_mem=$((need_mem + 512)) ;;
-      scan)  need_cpu10=$((need_cpu10 + 20)); need_mem=$((need_mem + 4096)) ;;
-    esac
-  done
+  # --- CPU / RAM requirement, summed from the selected modules' manifests ---
+  # shellcheck source=../lib/manifests.sh
+  [ -n "${MANIFESTS_ROOT:-}" ] || . "$INSTALLER_ROOT/lib/manifests.sh"
+  local need_cpu10 need_mem sums
+  sums="$(manifest_resources ${SELECTED_MODULES:-core})"
+  need_cpu10="${sums%% *}"; need_mem="${sums##* }"
+  # A zero floor means no manifest was readable. Approving an install because
+  # the requirement resolved to nothing is the wrong direction to fail in - the
+  # whole point of this check is that Sentinel is heavy.
+  if [ "${need_cpu10:-0}" -le 0 ] || [ "${need_mem:-0}" -le 0 ]; then
+    pf_fail "Could not read a resource floor for the selected modules ($SELECTED_MODULES). Each module declares one in modules/<id>/manifest.json; a missing or unreadable manifest means this check verified nothing."
+    return 1
+  fi
 
   local cores mem_avail_mb
   cores="$(nproc)"

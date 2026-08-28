@@ -32,6 +32,8 @@ fi
 INSTALLER_ROOT="$SCRIPT_DIR"
 # shellcheck source=lib/common.sh
 . "$INSTALLER_ROOT/lib/common.sh"
+# shellcheck source=lib/manifests.sh
+. "$INSTALLER_ROOT/lib/manifests.sh"
 # shellcheck source=lib/health.sh
 . "$INSTALLER_ROOT/lib/health.sh"
 # shellcheck source=lib/secrets.sh

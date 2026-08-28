@@ -106,6 +106,27 @@ answer. The installer refuses without one.
 | `scan` | Greenbone / OpenVAS, loopback-only web UI | **off** | 2 cores / 4 GB |
 | `ai` | vibe-ai-router client config. **No container** | on (local) | — |
 
+### Where a module's facts live
+
+Each module ships a `manifest.json`. It is the single source for the module's
+host ports, CPU and RAM floor, host prerequisites, boot order, upgrade gate and
+ingress — and `preflight/ports.sh`, `preflight/resources.sh` and `install.sh`
+read it rather than carrying their own copies.
+
+They used to carry copies, and the copies had drifted: the port map was missing
+443 (Vaultwarden) and 3001 (Uptime Kuma) entirely while still listing six ports
+for a print module that no longer publishes them, and nothing in any single
+file made that visible. `scripts/check-manifests.py` now verifies the manifest
+against `compose.yml`, `versions/manifest.json` and `install.sh` on every push;
+it caught a boot-order contradiction on its first run.
+
+The manifest conforms to the **Vibe Appliance's** per-app schema, vendored at
+`.schema/manifest.schema.json`. That is what lets the appliance's console list
+Sentinel modules in the same catalog as Vibe apps without either side learning
+the other's internals — the appliance reads the manifest and renders *nothing*
+for it (no vhost, no emergency frontend, no tunnel ingress), because Sentinel
+owns its own runtime and its own ingress.
+
 ### Notes on the ones with sharp edges
 
 **`keys`** — Vaultwarden publishes in one of two modes, chosen in the wizard:
@@ -390,11 +411,19 @@ lib/                       common, cloudflare, compose-merge, health, secrets
 preflight/                 11 checks, two rounds
 wizard/                    firm profile → modules → secrets
 modules/<id>/
+  manifest.json            THE module's facts: host ports, resource floor, host
+                           prerequisites, boot order, upgrade gate, ingress.
+                           Read by this installer AND by the Vibe Appliance's
+                           console, so a firm sees one catalog.
   compose.yml              services; images via ${IMG_*} from the manifest
   env.schema               KEY=description:required|optional
   healthcheck.sh           module probe; exit 0 = healthy
   uninstall.sh             teardown; honours REMOVE_VOLUMES
   migrate/                 versioned upgrade steps
+.schema/                   the appliance's manifest schema, vendored; CI fails
+                           on drift
+scripts/check-manifests.py verifies every manifest still agrees with compose.yml,
+                           versions/manifest.json and install.sh
 lite/                      per-firm endpoint bundle generator
 upgrade/upgrade.sh         snapshot → gate → migrate → restart → verify
 versions/manifest.json     every image, tag, digest, and harness state
