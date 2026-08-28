@@ -59,6 +59,11 @@ generate_core_secrets() {
   ensure_secret_file wazuh_enrollment_pw     openssl rand -hex 16 >/dev/null
   ensure_secret_file restic_password         openssl rand -hex 24 >/dev/null
   ensure_secret_file sentinel_api_secret     openssl rand -hex 32 >/dev/null
+  # Vibe Print's ONLY credential: one shared bearer secret gating /admin and
+  # every /v1 call. There is no user model behind it and the gateway refuses
+  # to boot when it is empty. Generated once and reused on every re-run -
+  # rotating it cuts off every caller and every signed-in admin at once.
+  ensure_secret_file vibe_print_secret       openssl rand -hex 32 >/dev/null
   # Cloudflare token arrives from the wizard; store it as a file-backed secret.
   local cf_token
   cf_token="$(config_get '.cloudflare.api_token')"
@@ -109,7 +114,7 @@ write_env_file() {
     echo "MESH_BIND_IP=$mesh_bind"
     echo "TZ=$(config_get '.firm.timezone' 'America/Chicago')"
     echo ""
-    echo "# --- Postgres (single instance; databases sentinel/authentik/vaultwarden/vibe_print) ---"
+    echo "# --- Postgres (single instance; databases sentinel/authentik/vaultwarden) ---"
     echo "POSTGRES_USER=sentinel"
     echo "POSTGRES_PASSWORD=$(secret_value pg_password)"
     echo ""
@@ -143,8 +148,13 @@ write_env_file() {
     echo "RESTIC_REPOSITORY=$(config_get '.backup.restic_repository' '/var/lib/vibe-sentinel/restic-repo')"
     echo "BACKUP_WINDOW=$(config_get '.firm.backup_window' '01:00-03:00')"
     echo ""
-    echo "# --- Print module ---"
-    echo "PRINT_SPOOL_HOLD_HOURS=4"
+    echo "# --- Print module (ghcr.io/kisaesdevlab/vibe-printer) ---"
+    echo "VIBE_PRINT_SECRET=$(secret_value vibe_print_secret)"
+    echo "PRINT_JOB_RETENTION_DAYS=$(config_get '.modules.print.job_retention_days' '30')"
+    echo "PRINT_AUDIT_RETENTION_DAYS=$(config_get '.modules.print.audit_retention_days' '365')"
+    # RESERVED. Decision 26's on-site-direct / off-site-held policy needs the
+    # held-release feature, which does not exist upstream yet; today this only
+    # feeds printer-network-policy.sh. See modules/print/compose.yml.
     echo "ONSITE_SUBNETS=$(config_get '.firm.onsite_subnets_csv')"
     echo ""
     echo "# --- Scan module (Greenbone; off by default, loopback only) ---"

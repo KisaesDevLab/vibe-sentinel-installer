@@ -14,7 +14,7 @@
 #     enrollment password.
 #   * Sysmon (Windows) / auditd rules (Linux) / EndpointSecurity (macOS).
 #   * The posture collector on a 4-hour schedule.
-#   * Firm print queues over IPP, plus a host firewall rule blocking 9100/631/515
+#   * A host firewall rule blocking 9100/631/515
 #     egress to everything except the gateway.
 #
 # The setup key is single-use and short-lived by design: a bundle that leaks is
@@ -171,7 +171,6 @@ ENROLL_JSON="$OUT_DIR/enrollment.json"
       "wazuh-agent",
       "sysmon-or-auditd",
       "posture-task",
-      "print-queues",
       "print-firewall"
     ],
     netbird: {
@@ -179,7 +178,7 @@ ENROLL_JSON="$OUT_DIR/enrollment.json"
       setup_key: $nb_key,
       group: "workstations",
       single_use: ($uses == 1),
-      note: "Enrolled FIRST. The Wazuh manager, print queues, and Vaultwarden are all mesh-only; nothing else in this bundle can reach its server until the peer is up."
+      note: "Enrolled FIRST. The Wazuh manager, the print gateway, and Vaultwarden are all mesh-only; nothing else in this bundle can reach its server until the peer is up."
     },
     wazuh: {
       manager: $wazuh_host,
@@ -188,7 +187,11 @@ ENROLL_JSON="$OUT_DIR/enrollment.json"
       enrollment_password: $wazuh_pw,
       note: "Manager ports bind to the mesh interface only. Reached by NAME so a mesh IP change does not invalidate deployed agents."
     },
-    print: { gateway: $print_host, ipp_port: 631, release_ui_port: 8632 },
+    print: {
+      gateway: $print_host,
+      api_port: 8632,
+      note: "The gateway is an HTTP print API; it publishes no IPP queues, so this bundle installs none. What it DOES install is the egress firewall rule: the workstation may not reach tcp/9100, 631 or 515 on anything except the gateway, which is the control SENT-PR-002 rests on. Queue installation returns when Vibe-Printer ships IPP Everywhere publishing."
+    },
     vault: { host: $vault_host },
     posture: { interval_hours: 4 },
     privacy: "Sentinel Lite collects security telemetry, not content. No keystrokes, no screenshots, no file contents."
@@ -227,9 +230,15 @@ if [ "$PLATFORM" = "windows" ] || [ "$PLATFORM" = "all" ]; then
   if [ -f "$SCRIPT_DIR/print-queue/firewall/block-printer-egress.ps1" ]; then
     render "$SCRIPT_DIR/print-queue/firewall/block-printer-egress.ps1" "$W/payload/block-printer-egress.ps1"
   fi
-  if [ -f "$SCRIPT_DIR/print-queue/install-queues.ps1" ]; then
-    render "$SCRIPT_DIR/print-queue/install-queues.ps1" "$W/payload/install-queues.ps1"
-  fi
+  # NOT STAGED. install-queues.ps1 adds Windows printers pointed at the gateway
+  # over IPP Everywhere, and the gateway publishes no IPP queues - shipping it
+  # would put printers on every workstation that silently fail. The script is
+  # kept because it is correct for the feature; it returns to the bundle when
+  # Vibe-Printer ships queue publishing. The egress firewall rule above is the
+  # part of the print control that works today and is staged unconditionally.
+  # if [ -f "$SCRIPT_DIR/print-queue/install-queues.ps1" ]; then
+  #   render "$SCRIPT_DIR/print-queue/install-queues.ps1" "$W/payload/install-queues.ps1"
+  # fi
   for t in "$SCRIPT_DIR/windows"/*.wxs "$SCRIPT_DIR/windows"/*.ps1 "$SCRIPT_DIR/windows"/*.md; do
     [ -f "$t" ] || continue
     render "$t" "$W/$(basename "$t")"

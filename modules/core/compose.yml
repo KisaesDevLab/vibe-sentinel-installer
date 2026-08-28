@@ -21,6 +21,9 @@ volumes:
   wazuh-manager-data:
   wazuh-indexer-data:
   ntfy-data:
+  # Declared here as well as in modules/print/compose.yml so sentinel-backup
+  # can mount it whether or not the print module is part of this install.
+  print-data:
 
 secrets:
   pg_password:
@@ -34,7 +37,8 @@ secrets:
 
 services:
   # --- PostgreSQL 16: ONE instance; init script creates the sentinel,
-  # --- authentik, vaultwarden, and vibe_print databases (plan §2.1/§2.4).
+  # --- authentik and vaultwarden databases (plan §2.1/§2.4). The print
+  # --- module is SQLite and has no database here.
   sentinel-db:
     image: ${IMG_POSTGRES}
     restart: unless-stopped
@@ -304,5 +308,11 @@ services:
     volumes:
       - ${SENTINEL_MODULES_DIR}/core/backup:/opt/backup:ro
       - ${SENTINEL_DATA_DIR}:/data/sentinel:ro
+      # The print gateway's SQLite lives in a volume, not under the data dir.
+      # Naming the volume here means compose resolves it to the one
+      # modules/print/compose.yml declares when that module is merged in, and
+      # creates an empty one when it is not - so the mount is safe either way
+      # and the backup loop simply finds an empty directory.
+      - print-data:/data/print:ro
       - ${SENTINEL_DATA_DIR}/restic-repo:/var/lib/vibe-sentinel/restic-repo
     networks: [sentinel]

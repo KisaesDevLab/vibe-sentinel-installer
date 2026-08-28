@@ -37,6 +37,29 @@ esac
 mkdir -p "$AI_DIR"
 chmod 750 "$AI_DIR"
 
+# --- Vibe Appliance's AI Router, when there is one --------------------------
+# The appliance installs vibe-ai-router as a first-class app: one place the
+# firm's provider keys live, one cost ledger, one disclosure log. Sentinel
+# pointing at a SECOND router on the same host would split all three, which is
+# the duplication the federation work exists to stop.
+#
+# We do not rewire it automatically, and the reason is a real constraint rather
+# than caution: the appliance's router listens on `vibe-ai-router:8220` on the
+# `vibe_net` network, and Sentinel's containers are on `vibe-sentinel`. Reaching
+# it needs sentinel-api and sentinel-worker attached to vibe_net as an external
+# network - a compose change with its own blast radius, and one that is simply
+# not available when Sentinel runs on its own host. So: detect, tell the
+# operator exactly what to do, and let them decide.
+if [ -f /opt/vibe/env/vibe-ai-router.env ] && ! printf '%s' "$ROUTER_URL" | grep -q 'vibe-ai-router'; then
+  log_warn "This host is also running the Vibe Appliance's AI Router, and Sentinel is configured to use a different one ($ROUTER_URL)."
+  log      "  Two routers means two sets of provider keys, two cost ledgers and two disclosure logs for one firm."
+  log      "  To share the appliance's router instead:"
+  log      "    1. set .modules.ai.router_url to http://vibe-ai-router:8220 in $SENTINEL_CONFIG"
+  log      "    2. attach sentinel-api and sentinel-worker to vibe_net as an external network"
+  log      "    3. mint an app token in the router console and store it as secrets/vibe_ai_token"
+  log      "  Leave it alone if Sentinel is meant to keep its own egress path."
+fi
+
 # The API key for cloud mode, if the firm supplied one, is a file-backed secret
 # like every other credential — never inline in this config.
 CLOUD_KEY_FILE="$SENTINEL_ETC/secrets/anthropic_api_key"

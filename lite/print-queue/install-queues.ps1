@@ -2,6 +2,15 @@
 .SYNOPSIS
   Installs the firm's Vibe Print queues on a Windows workstation over IPP.
 
+.NOTES
+  NOT SHIPPED IN LITE BUNDLES as of 2026-08-28, and lite/generate-lite.sh no
+  longer stages it. The print module now runs the image Vibe-Printer actually
+  publishes, which is an HTTP print API that dials OUT to devices and publishes
+  no IPP queues - so every printer this script added would install cleanly and
+  then silently fail to print. It is kept, unchanged and correct, for the day
+  Vibe-Printer ships IPP Everywhere publishing; re-enable the staging block in
+  generate-lite.sh at the same time.
+
 .DESCRIPTION
   Adds one Windows printer per firm queue, pointed at the Vibe Print gateway
   over the mesh using IPP Everywhere. No vendor driver is installed and no

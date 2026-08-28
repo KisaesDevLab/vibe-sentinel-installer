@@ -272,35 +272,15 @@
       "first_party": true,
       "note": "Kisaes-built. Hosts the Uptime Kuma socket.io monitor adapter and the correlation engine."
     },
-    "vibe-print": {
-      "repo": "ghcr.io/kisaesdevlab/vibe-print",
-      "tag": "0.1.0",
+    "vibe-printer": {
+      "repo": "ghcr.io/kisaesdevlab/vibe-printer",
+      "tag": "v0.1.0",
       "digest": "sha256:TODO-pin-during-phase0",
       "harness_gated": false,
       "harness_passed": true,
       "used_by": ["print"],
       "first_party": true,
-      "note": "Kisaes-built. THE SAME IMAGE as the standalone Vibe Print product (Decision 22); the module adds only the Sentinel integration layer. CUPS + IPP Everywhere + legacy raw-9100 listener."
-    },
-    "vibe-print-release": {
-      "repo": "ghcr.io/kisaesdevlab/vibe-print-release",
-      "tag": "0.1.0",
-      "digest": "sha256:TODO-pin-during-phase0",
-      "harness_gated": false,
-      "harness_passed": true,
-      "used_by": ["print"],
-      "first_party": true,
-      "note": "Kisaes-built. Web/mobile-web PIN release for HELD jobs only. No badge hardware at launch (Decision 23)."
-    },
-    "vibe-print-scanner-inbox": {
-      "repo": "ghcr.io/kisaesdevlab/vibe-print-scanner-inbox",
-      "tag": "0.1.0",
-      "digest": "sha256:TODO-pin-during-phase0",
-      "harness_gated": false,
-      "harness_passed": true,
-      "used_by": ["print"],
-      "first_party": true,
-      "note": "Kisaes-built. SMB/FTPS/SMTP receiver so scanner output lands in the firm's document intake instead of a printer's internal storage or an open share."
+      "note": "Kisaes-built, and the SAME image the Vibe Appliance installs (KisaesDevLab/Vibe-Printer) - one packaging of one product across both appliances. REPLACED the vibe-print / vibe-print-release / vibe-print-scanner-inbox trio on 2026-08-28: those three names were never built by any repository, so the print module could not have started. The real product is one container - an API print gateway on :8080 that dials OUT to printers (tcp/9100, tcp/631, or its internal CUPS). It publishes no IPP queues, has no held-release station and no scanner inbox; see modules/print/compose.yml for what that costs Decision 26 and SENT-PR-009. Single-process SQLite by design, so it no longer uses the shared Postgres."
     }
   }
 }

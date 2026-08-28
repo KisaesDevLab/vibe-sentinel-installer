@@ -331,10 +331,10 @@ fi
 
 # 14. Print (Vibe Print)
 if module_selected print; then
-  up vibe-print vibe-print-release vibe-print-scanner-inbox
+  up vibe-printer
   wait_healthy "Vibe Print gateway" 300 \
-    "The Vibe Print gateway (CUPS) failed to start — docker compose logs vibe-print" \
-    check_container_healthy vibe-print
+    "The Vibe Print gateway failed to start. The most likely cause is an empty VIBE_PRINT_SECRET - it is the app's only credential and it refuses to boot without one. Logs: docker compose logs vibe-printer" \
+    check_container_healthy vibe-printer
 fi
 
 # 15. Scan (Greenbone)

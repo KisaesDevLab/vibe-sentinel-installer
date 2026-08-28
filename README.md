@@ -102,7 +102,7 @@ answer. The installer refuses without one.
 | `mesh` | NetBird management/signal/dashboard. Relay sub-module **off** (direct-only, zero inbound ports) | on | 1 core / 1 GB |
 | `keys` | Vaultwarden on the shared Postgres, separate database | on | 0.5 / 512 MB |
 | `pulse` | Uptime Kuma v2, pinned; monitors auto-managed from inventory | on | 0.5 / 512 MB |
-| `print` | Vibe Print gateway (CUPS + IPP Everywhere), release station, scanner inbox | on | 0.5 / 512 MB |
+| `print` | Vibe Print gateway — HTTP print API, controlled egress to every printer | on | 0.5 / 512 MB |
 | `scan` | Greenbone / OpenVAS, loopback-only web UI | **off** | 2 cores / 4 GB |
 | `ai` | vibe-ai-router client config. **No container** | on (local) | — |
 
@@ -133,11 +133,36 @@ once, and **schedules an automatic revert 30 minutes later**. A window that
 cannot be guaranteed to close is refused outright.
 
 **`print`** — Vibe Print is the only thing on the network allowed to talk to a
-printer. On-site jobs release immediately with **no PIN**; off-site mesh jobs
-are held for PIN/web release at the device, so client documents never sit in an
-unattended tray (Decision 26). **No content inspection, ever** (Decision 24):
-control is by queue policy and source, not by reading the job. After install,
-run:
+printer, and that isolation is what the module delivers today. **No content
+inspection, ever** (Decision 24) — and with the current product that holds
+structurally, not by configuration: the gateway is handed a payload by a caller
+and renders it, so there is no print stream to intercept.
+
+> **Retargeted 2026-08-28, and narrower than originally planned.** This module
+> referenced three images — `vibe-print`, `vibe-print-release` and
+> `vibe-print-scanner-inbox` — that no repository builds, so it could never
+> have started. It now runs `ghcr.io/kisaesdevlab/vibe-printer`, the image the
+> Vibe-Printer repo actually publishes and the same one the Vibe Appliance
+> installs: one packaging of one product across both appliances.
+>
+> That product is an **API print gateway**, not a print server. Callers POST to
+> `/v1/print` on the mesh and it dials **out** to the device (tcp/9100, tcp/631,
+> or its internal CUPS). Three things the original design assumed do not exist
+> yet, and the firm's scorecard must not claim them:
+>
+> - **IPP Everywhere queue publishing** — workstations see no virtual queues.
+> - **Held release with PIN/web release at the device** — so **Decision 26's
+>   on-site-direct / off-site-held policy cannot be enforced today**. This is
+>   the gap that matters most: "off-site jobs are held so client documents never
+>   sit unattended in a tray" is not currently backed by anything.
+> - **The scanner inbox** (SMB/FTPS/SMTP) — so SENT-PR-009's scan-destination
+>   control has no enforcement point.
+>
+> All three are tracked as features of `KisaesDevLab/Vibe-Printer`. The host
+> port map shrank from eight entries to one as a result, which is a reduction in
+> exposed surface rather than a regression.
+
+After install, run:
 
 ```bash
 sudo bash /etc/vibe-sentinel/modules/print/printer-network-policy.sh \
@@ -190,10 +215,7 @@ Vibe appliances on the same host.
 | 9200/tcp | OpenSearch | loopback |
 | — | NetBird mgmt/signal | no host port (tunnel) |
 | 3478/udp | NetBird relay | **only if the opt-in relay is enabled** |
-| 631/tcp | Vibe Print IPP | **mesh interface** |
-| 9100/tcp | Vibe Print legacy raw | **mesh interface** |
-| 8632/tcp | Print release UI | **mesh interface** |
-| 445, 21, 2525, 30000-30009 | Scanner inbox (SMB/FTPS/SMTP) | **mesh interface** |
+| 8632/tcp | Vibe Print gateway + admin UI | **mesh interface** |
 | 443/tcp | Vaultwarden | **mesh interface** (the published path in mesh_only mode) |
 | 3001/tcp | Uptime Kuma | **mesh interface** |
 | 8085/tcp | ntfy | **mesh interface** |
@@ -203,6 +225,30 @@ Vibe appliances on the same host.
 **No inbound ports from the internet.** The only possible exception is the
 opt-in NetBird relay, and enabling it is a logged, QI-approved change recorded
 in the risk assessment.
+
+### Sharing a host with the Vibe Appliance
+
+Both can run on one box, and `preflight/ports.sh` now checks for the collision
+in both directions rather than assuming it away. Two things are worth knowing
+before you try:
+
+- **`:443` genuinely collides.** The appliance's Caddy binds `0.0.0.0:443`;
+  Vaultwarden binds `<mesh-ip>:443` in `mesh_only` mode, and a wildcard bind
+  wins over a specific one. Run Vaultwarden in **tunnel** mode on a shared
+  host — which is what most firms should pick anyway — or give Sentinel its
+  own box. Preflight now names the appliance as the owner instead of printing a
+  pid.
+- **Two Cloudflare Tunnels on one zone is fine.** Sentinel provisions its own
+  tunnel and its own CNAMEs; the appliance provisions its own. The appliance's
+  stale-CNAME pruning filters on records whose content matches **its own**
+  tunnel id (`infra/cloudflared-up.sh` §5b), so it will not delete Sentinel's
+  records — verified by reading that code, not assumed. The appliance's
+  renderers also skip any manifest carrying `runtime: "sentinel"`, so it emits
+  no vhost, no emergency frontend and no ingress rule for a Sentinel module.
+
+The resource floors still apply and are the more common reason for a second
+host: `core` alone wants 4 cores and 8 GB **free**, against the appliance's
+1vcpu/2GB reference droplet.
 
 ---
 
