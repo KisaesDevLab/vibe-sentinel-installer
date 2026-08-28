@@ -127,6 +127,36 @@ the other's internals — the appliance reads the manifest and renders *nothing*
 for it (no vhost, no emergency frontend, no tunnel ingress), because Sentinel
 owns its own runtime and its own ingress.
 
+### Turning one module on or off after install
+
+`install.sh` selects modules once and brings the whole stack up in §2.6 order.
+For a single module afterwards:
+
+```bash
+sudo bash modules/module.sh status
+sudo bash modules/module.sh enable pulse
+sudo bash modules/module.sh disable pulse      --reason "firm uses Better Uptime" --approver "Jane Smith, QI"
+```
+
+This is also what the Vibe Appliance's console calls when an operator clicks
+Enable or Disable on a Sentinel row, so both paths converge on one script.
+
+Three things it refuses:
+
+- **`core`** — every other module depends on it, so turning it off is tearing
+  the appliance down. That is `uninstall.sh`, which exports the firm's
+  compliance artifacts first.
+- **A Security Six module without a compensating control.** `mesh`, `keys`,
+  `pulse` and `print` need `--reason` and `--approver`; the answer is recorded
+  in `config.json` under `compensating_controls`. A firm may legitimately use
+  Tailscale instead of NetBird, but the scorecard still needs an answer.
+- **A module whose `requiredApps` are not themselves enabled** — it would start
+  and immediately fail, and the operator would read container logs to learn
+  something this refusal says in one sentence.
+
+Data is never removed by either direction. Re-enabling picks the volumes
+straight back up.
+
 ### Notes on the ones with sharp edges
 
 **`keys`** — Vaultwarden publishes in one of two modes, chosen in the wizard:
