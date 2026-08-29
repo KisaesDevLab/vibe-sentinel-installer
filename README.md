@@ -65,9 +65,9 @@ weeks later when the first alert does not arrive.
   full Safeguards Rule or the small-business exemption (REQ-019). Sentinel
   labels the result "mandatory" or "voluntary" and does not guess.
 - Staff countries, business hours, backup window, maintenance window
-- **On-premises subnets** — jobs from these print immediately with no PIN;
-  everything else is held (Decision 26). Verified against the host's own
-  interfaces.
+- **On-premises subnets** — label each print job as on-premises or not in the
+  audit log, and scope the printer-isolation firewall rules. Verified against the
+  host's own interfaces. Every job prints on submission; there is no hold.
 - Agent-count estimate — drives the disk requirement
 
 ### 5. A host that meets the resource floor
@@ -202,10 +202,10 @@ and renders it, so there is no print stream to intercept.
 > yet, and the firm's scorecard must not claim them:
 >
 > - **IPP Everywhere queue publishing** — workstations see no virtual queues.
-> - **Held release with PIN/web release at the device** — so **Decision 26's
->   on-site-direct / off-site-held policy cannot be enforced today**. This is
->   the gap that matters most: "off-site jobs are held so client documents never
->   sit unattended in a tray" is not currently backed by anything.
+> - **Held release with PIN/web release at the device** — no longer wanted.
+>   Decision 26 was **withdrawn** (build plan v1.7, §11 R26) rather than left as
+>   a claim nothing could enforce: every job prints on submission, and the
+>   control plane's rules, schema and reports no longer describe holding.
 > - **The scanner inbox** (SMB/FTPS/SMTP) — so SENT-PR-009's scan-destination
 >   control has no enforcement point.
 >

@@ -79,7 +79,8 @@ else
   echo "WARN printer network policy not applied — run modules/print/printer-network-policy.sh so only this host reaches printer ports (SENT-PR-002)"
 fi
 
-# Features the compliance scorecard must not claim until they ship upstream.
-echo "WARN held release (Decision 26) and the scanner inbox (SENT-PR-009) are not implemented upstream - do not record them as active controls"
+# The scanner inbox is still absent upstream; held release is no longer wanted
+# and was withdrawn from the plan (v1.7 §11 R26) rather than left as a claim.
+echo "WARN the scanner inbox (SENT-PR-009) is not implemented upstream - do not record it as an active control"
 
 exit "$ok"

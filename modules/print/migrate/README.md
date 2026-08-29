@@ -13,15 +13,13 @@ identity, inventory sync, event forwarding, policy push) is additive.
 Covers:
 
 - The `vibe_print` database on the shared Sentinel Postgres instance: queues,
-  release policy per queue, held-job records, printer inventory, PINs.
+  printer inventory and the print-job audit log.
 - CUPS configuration in the `print-cups-config` volume — queue definitions,
   IPP Everywhere publishing, and the wildcard-cert paths. A CUPS major-version
-  bump can rewrite `printers.conf`; the step must re-assert every queue's
-  `release_mode` afterwards.
-- Release-policy continuity. `direct_onsite_hold_offsite` is the default
-  (Decision 26) and any queue the firm flipped to `always_hold` or
-  `always_direct` must survive the upgrade unchanged — a queue that silently
-  reverts to direct release would put client documents in an unattended tray.
+  bump can rewrite `printers.conf`; the step must re-assert every queue
+  afterwards.
+- There is no release policy to carry forward. Held/PIN release was withdrawn
+  (build plan v1.7, §11 R26): every job prints on submission.
 - `ONSITE_SUBNETS` re-validation against the Sentinel host's own interfaces
   after a network change.
 - Printer-isolation rules: re-run `printer-network-policy.sh` after any step
@@ -36,9 +34,9 @@ inspection, at any point in the pipeline, including migrations).
 
 ## Pre-upgrade checklist for this module
 
-1. Drain held jobs, or accept that jobs past `HOLD_TIME_HOURS` will be
-   secure-deleted during the window.
+1. No jobs are in flight — every job prints on submission, so the window only
+   needs to be clear of active printing rather than drained of held jobs.
 2. A Vault (or built-in restic) snapshot tagged `vibe-print` exists, covering
-   the `vibe_print` database and the CUPS config volume.
+   the print gateway's SQLite volume and the CUPS config volume.
 3. The Print Audit Log reconciles to the CUPS job count before the upgrade, so
    any post-upgrade discrepancy is attributable.

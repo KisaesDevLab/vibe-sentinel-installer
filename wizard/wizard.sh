@@ -108,8 +108,9 @@ run_wizard() {
   ask business_hours  "Business hours (local, HH:MM-HH:MM)" "08:00-18:00"
   ask backup_window   "Backup window (HH:MM-HH:MM; backup activity inside it is not alerted)" "01:00-03:00"
   ask maint_window    "Maintenance window (e.g. Sun 22:00-24:00)" "Sun 22:00-24:00"
-  echo "On-site subnets define which print jobs release immediately with no PIN"
-  echo "(Decision 26 — off-site mesh jobs are held for PIN/web release)."
+  echo "On-site subnets label each print job as on-premises or not in the audit"
+  echo "log, and scope the printer-isolation firewall rules. Every job prints on"
+  echo "submission; there is no hold and no PIN."
   ask onsite_subnets  "Firm on-premises subnets (comma-separated CIDRs)" "192.168.1.0/24"
 
   # ---- Module selection ---------------------------------------------------

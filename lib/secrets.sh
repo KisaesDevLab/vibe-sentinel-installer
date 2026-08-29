@@ -152,9 +152,9 @@ write_env_file() {
     echo "VIBE_PRINT_SECRET=$(secret_value vibe_print_secret)"
     echo "PRINT_JOB_RETENTION_DAYS=$(config_get '.modules.print.job_retention_days' '30')"
     echo "PRINT_AUDIT_RETENTION_DAYS=$(config_get '.modules.print.audit_retention_days' '365')"
-    # RESERVED. Decision 26's on-site-direct / off-site-held policy needs the
-    # held-release feature, which does not exist upstream yet; today this only
-    # feeds printer-network-policy.sh. See modules/print/compose.yml.
+    # Labels each print job as on-premises or not in the audit log, and scopes
+    # printer-network-policy.sh. It does not gate anything: every job prints on
+    # submission (held/PIN release withdrawn, build plan v1.7 §11 R26).
     echo "ONSITE_SUBNETS=$(config_get '.firm.onsite_subnets_csv')"
     echo ""
     echo "# --- Scan module (Greenbone; off by default, loopback only) ---"

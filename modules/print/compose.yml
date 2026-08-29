@@ -17,24 +17,24 @@
 # tcp/631, or an office printer through the CUPS instance inside the container.
 # 631 and 9100 are OUTBOUND destination ports. It does not listen on them.
 #
-# Three things the original module assumed therefore do not exist yet:
+# Two things the original module assumed do not exist yet:
 #
 #   1. IPP Everywhere queue publishing. Workstations cannot see virtual queues
 #      over the mesh, because nothing publishes any. Callers integrate with the
 #      HTTP API instead.
-#   2. Held release with PIN/web release at the device. Decision 26's
-#      on-site-direct / off-site-held policy therefore CANNOT be enforced by
-#      this module today. This is the gap that matters most for compliance
-#      evidence: the claim "off-site jobs are held so client documents never
-#      sit unattended in a tray" is not currently backed by anything.
-#   3. The scanner inbox (SMB / FTPS / SMTP receivers). Scan-to-folder from an
+#   2. The scanner inbox (SMB / FTPS / SMTP receivers). Scan-to-folder from an
 #      MFP has nowhere to land here, so SENT-PR-009's scan-destination control
 #      has no enforcement point.
 #
-# All three are tracked as features of KisaesDevLab/Vibe-Printer. Until they
-# ship, this module delivers the part that is real — a single controlled egress
-# to every printer, with a hash-chained audit of every job — and the firm's
-# scorecard must not claim the rest.
+# Both are tracked as features of KisaesDevLab/Vibe-Printer.
+#
+# A third — held release with PIN/web release at the device — is WITHDRAWN, not
+# pending. Decision 26 was removed from the build plan (v1.7, §11 R26) rather
+# than left as a claim nothing could enforce: every job prints on submission,
+# and the control plane's rules, schema and reports no longer describe holding.
+#
+# What this module delivers is a single controlled egress to every printer with
+# a hash-chained audit of every job. The firm's scorecard must not claim more.
 #
 # CONSEQUENTLY the §2.6 host port map for this module collapses from eight
 # entries (631, 9100, 8632, 445, 21, 2525, 30000-30009) to one. That is a
